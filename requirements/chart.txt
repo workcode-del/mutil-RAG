@@ -1,0 +1,6 @@
+# PP-Chart2Table entered Transformers in 2026; keep it isolated from parser/graph envs.
+# Install the CUDA-matching torch wheel separately.
+transformers>=5.14,<6
+accelerate>=1.12,<2
+Pillow>=10,<13
+numpy>=1.26,<3

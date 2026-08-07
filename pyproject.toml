@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scientific-evidence-rag"
+version = "0.1.0"
+description = "Fine-grained multimodal RAG over scientific-paper evidence graphs"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "Research prototype; third-party components retain their own licenses" }
+authors = [{ name = "Thesis project" }]
+dependencies = [
+  "numpy>=1.26,<3",
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "ruff>=0.9,<1", "mypy>=1.14,<2"]
+api = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.34,<1"]
+app = ["streamlit>=1.41,<2", "requests>=2.32,<3"]
+vector = ["qdrant-client>=1.18,<2"]
+graph = ["networkx>=3.4,<4", "pcst-fast>=1.0.10,<2"]
+
+[project.scripts]
+paper-rag = "paper_rag.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

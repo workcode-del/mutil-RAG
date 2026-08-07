@@ -1,0 +1,5 @@
+# Isolated parser-env; lock exact resolved versions after Gate A.
+mineru[all]
+PyMuPDF>=1.24,<2
+PyYAML>=6,<7
+

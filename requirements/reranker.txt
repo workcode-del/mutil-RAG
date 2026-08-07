@@ -1,0 +1,8 @@
+# Qwen3-VL-Reranker shares the official retrieval repository with the embedder.
+# Run it separately so the two 2B models need not occupy one GPU together.
+transformers>=4.57.3,<6
+accelerate>=1.12,<2
+qwen-vl-utils>=0.0.14
+numpy>=1.26,<3
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1

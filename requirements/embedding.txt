@@ -1,0 +1,9 @@
+# Install the official Qwen3-VL-Embedding repository with `uv sync` first.
+# Its current tested floor is Python 3.11, torch 2.8 and transformers 4.57.3.
+transformers>=4.57.3,<6
+accelerate>=1.12,<2
+qwen-vl-utils>=0.0.14
+Pillow>=10,<13
+numpy>=1.26,<3
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1

@@ -10,4 +10,4 @@ dependencies:
 
 # 创建环境后，在仓库根目录执行：
 #   conda activate paper-rag
-#   powershell -ExecutionPolicy Bypass -File scripts/install_locked.ps1
+#   bash scripts/install_locked.sh

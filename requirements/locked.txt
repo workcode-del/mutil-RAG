@@ -2,7 +2,7 @@
 # Updated: 2026-08-10
 #
 # PyTorch and torchvision are intentionally separated into requirements/torch.txt.
-# install_locked.ps1 installs or reuses them before resolving this file.
+# install_locked.sh installs or reuses them before resolving this file.
 
 # Project foundation
 numpy==2.2.6

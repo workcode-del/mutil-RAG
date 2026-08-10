@@ -21,15 +21,22 @@ MinerU、PP-Chart2Table、Qwen3-VL Embedding/Reranker、PyG、Qdrant客户端、
 
 - Python：3.11；
 - GPU：CUDA环境优先，CPU只能用于接口和小数据检查；
-- Windows下如果`pcst-fast`或MinerU安装失败，使用WSL2 Ubuntu，但仍只创建一个`paper-rag` Conda环境；
+- 部署系统：Linux x86-64，推荐Ubuntu 22.04/24.04；
 - 生成模型优先使用OpenAI-compatible外部API，避免同一张GPU再常驻一个生成模型。
 
 ## 3. 一次性安装
 
-在安装了Miniconda或Anaconda的PowerShell中：
+先安装Linux系统库：
 
-```powershell
-cd "D:\GitHub project\mutil RAG"
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential git curl libgl1 libglib2.0-0 libgomp1 fontconfig fonts-noto-cjk
+```
+
+在安装了Miniconda或Anaconda的Shell中：
+
+```bash
+cd /path/to/mutil-RAG
 conda env create -f environment.yml
 conda activate paper-rag
 ```
@@ -45,15 +52,15 @@ PyPI:  https://pypi.tuna.tsinghua.edu.cn/simple
 
 先准备Qwen官方代码：
 
-```powershell
-New-Item -ItemType Directory -Force third_party
+```bash
+mkdir -p third_party
 git clone https://github.com/QwenLM/Qwen3-VL-Embedding.git third_party/Qwen3-VL-Embedding
 ```
 
 然后执行固定版本安装脚本：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/install_locked.ps1
+```bash
+bash scripts/install_locked.sh
 ```
 
 脚本按照固定顺序执行：
@@ -76,8 +83,8 @@ MinerU使用`mineru[core]==3.4.4`，不再安装`mineru[all]`带来的vLLM、lmd
 
 统一依赖中已经包含`modelscope`。安装完成后建议在启动系统前预下载权重：
 
-```powershell
-paper-rag download-models --config configs/default.yaml `
+```bash
+paper-rag download-models --config configs/default.yaml \
   --components embedding reranker
 ```
 
@@ -88,8 +95,8 @@ Qwen模型对应的ModelScope仓库：
 
 折线图模型如果确认ModelScope中存在对应仓库，可以追加`chart`：
 
-```powershell
-paper-rag download-models --config configs/default.yaml `
+```bash
+paper-rag download-models --config configs/default.yaml \
   --components embedding reranker chart
 ```
 
@@ -147,15 +154,15 @@ model_download:
 
 embedding:
   model: Qwen/Qwen3-VL-Embedding-2B
-  local_path: D:/models/Qwen3-VL-Embedding-2B
+  local_path: /data/models/Qwen3-VL-Embedding-2B
 
 reranker:
   model: Qwen/Qwen3-VL-Reranker-2B
-  local_path: D:/models/Qwen3-VL-Reranker-2B
+  local_path: /data/models/Qwen3-VL-Reranker-2B
 
 chart:
   model: PaddlePaddle/PP-Chart2Table_safetensors
-  local_path: D:/models/PP-Chart2Table_safetensors
+  local_path: /data/models/PP-Chart2Table_safetensors
 ```
 
 `source: local`下路径不存在会立即报错，不会访问网络。
@@ -168,16 +175,16 @@ chart:
 
 按照[MinerU官方代码](https://github.com/opendatalab/MinerU)解析PDF，得到`content_list.json`和图片目录。随后规范化为证据图：
 
-```powershell
-paper-rag parse-mineru data/parsed/paper1_content_list.json `
+```bash
+paper-rag parse-mineru data/parsed/paper1_content_list.json \
   data/parsed/paper1_graph.json --paper-id paper1
 paper-rag inspect-graph data/parsed/paper1_graph.json
 ```
 
 多篇论文图合并：
 
-```powershell
-paper-rag merge-graphs data/parsed/evidence_graph.json `
+```bash
+paper-rag merge-graphs data/parsed/evidence_graph.json \
   data/parsed/paper1_graph.json data/parsed/paper2_graph.json
 ```
 
@@ -187,10 +194,10 @@ paper-rag merge-graphs data/parsed/evidence_graph.json `
 
 脚本会在当前进程直接加载Qwen3-VL Embedding，不再依赖Embedding HTTP服务：
 
-```powershell
+```bash
 paper-rag validate-config configs/default.yaml
-python scripts/index_graph.py data/parsed/evidence_graph.json `
-  --config configs/default.yaml `
+python scripts/index_graph.py data/parsed/evidence_graph.json \
+  --config configs/default.yaml \
   --embedding-cache outputs/base_embeddings.npz
 ```
 
@@ -198,11 +205,11 @@ Qwen3-VL使用2048维向量。旧的1536维索引不能复用。
 
 ### 5.3 训练HGT
 
-```powershell
-python scripts/train_srmg.py `
-  data/parsed/evidence_graph.json outputs/base_embeddings.npz `
-  --query-samples data/train/query_pairs.jsonl `
-  --query-embeddings outputs/query_embeddings.npz `
+```bash
+python scripts/train_srmg.py \
+  data/parsed/evidence_graph.json outputs/base_embeddings.npz \
+  --query-samples data/train/query_pairs.jsonl \
+  --query-embeddings outputs/query_embeddings.npz \
   --output outputs/srmg_index --epochs 20 --device cuda
 ```
 
@@ -212,11 +219,11 @@ python scripts/train_srmg.py `
 
 设置证据图和HGT产物后，在同一个环境用统一入口启动一个API进程：
 
-```powershell
-paper-rag-serve `
-  --graph data/parsed/evidence_graph.json `
-  --config configs/default.yaml `
-  --hgt-artifacts outputs/srmg_index `
+```bash
+paper-rag-serve \
+  --graph data/parsed/evidence_graph.json \
+  --config configs/default.yaml \
+  --hgt-artifacts outputs/srmg_index \
   --host 127.0.0.1 --port 8000
 ```
 
@@ -226,18 +233,17 @@ paper-rag-serve `
 
 健康检查与查询：
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health
+```bash
+curl http://127.0.0.1:8000/health
 
-$body = @{
-  query = "达到500 MPa强度的材料有哪些？"
-  metric = "strength"
-  value = 500
-  unit = "MPa"
-} | ConvertTo-Json
-
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/query `
-  -ContentType "application/json" -Body $body
+curl -X POST http://127.0.0.1:8000/query \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "达到500 MPa强度的材料有哪些？",
+    "metric": "strength",
+    "value": 500,
+    "unit": "MPa"
+  }'
 ```
 
 ## 7. 显存不足时的可选方式
@@ -246,7 +252,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/query `
 
 这种方式不复制代码、不创建新环境，只隔离模型进程：
 
-```powershell
+```bash
 python -m uvicorn services.embedding_api:app --port 8101
 python -m uvicorn services.reranker_api:app --port 8102
 python -m uvicorn services.retrieval_api:app --port 8000

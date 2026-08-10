@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from paper_rag.model_source import resolve_model_reference
+
 from .pp_chart2table import ChartExtractionResult
 
 
@@ -11,20 +13,35 @@ DePlotResult = ChartExtractionResult
 class DePlotExtractor:
     prompt = "Generate underlying data table of the figure below:"
 
-    def __init__(self, model_name: str = "google/deplot", device: str = "cuda") -> None:
+    def __init__(
+        self,
+        model_name: str = "google/deplot",
+        device: str = "cuda",
+        model_source: str = "modelscope",
+        local_path: str | Path | None = None,
+        modelscope_id: str | None = None,
+        model_cache_dir: str | Path = "data/models",
+    ) -> None:
         try:
             from transformers import Pix2StructForConditionalGeneration, Pix2StructProcessor
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("Install embedding-env dependencies before loading DePlot") from exc
-        self.processor = Pix2StructProcessor.from_pretrained(model_name)
-        self.model = Pix2StructForConditionalGeneration.from_pretrained(model_name).to(device)
+            raise RuntimeError("Install the unified dependencies before loading DePlot") from exc
+        resolved_model = resolve_model_reference(
+            model_name,
+            local_path=local_path,
+            modelscope_id=modelscope_id,
+            source=model_source,
+            cache_dir=model_cache_dir,
+        )
+        self.processor = Pix2StructProcessor.from_pretrained(resolved_model)
+        self.model = Pix2StructForConditionalGeneration.from_pretrained(resolved_model).to(device)
         self.device = device
 
     def extract(self, image_path: str | Path, max_new_tokens: int = 512) -> DePlotResult:
         try:
             from PIL import Image
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("Install Pillow in embedding-env") from exc
+            raise RuntimeError("Install Pillow in the paper-rag Conda environment") from exc
         image = Image.open(image_path).convert("RGB")
         inputs = self.processor(images=image, text=self.prompt, return_tensors="pt")
         inputs = {name: tensor.to(self.device) for name, tensor in inputs.items()}

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Sequence
 
 import numpy as np
+
+from paper_rag.model_source import resolve_model_reference
 
 
 class Qwen3VLEmbedder:
@@ -24,6 +27,10 @@ class Qwen3VLEmbedder:
         max_length: int = 8192,
         query_instruction: str = "Retrieve scientific evidence that answers the question.",
         device: str = "cuda",
+        model_source: str = "modelscope",
+        local_path: str | Path | None = None,
+        modelscope_id: str | None = None,
+        model_cache_dir: str | Path = "data/models",
     ) -> None:
         if official_repo is not None:
             repo = str(Path(official_repo).resolve())
@@ -40,12 +47,19 @@ class Qwen3VLEmbedder:
 
         self.dimension = dimension
         self.query_instruction = query_instruction
+        resolved_model = resolve_model_reference(
+            model_name,
+            local_path=local_path,
+            modelscope_id=modelscope_id,
+            source=model_source,
+            cache_dir=model_cache_dir,
+        )
         kwargs = {
-            "model_name_or_path": model_name,
+            "model_name_or_path": resolved_model,
             "max_length": max_length,
             "torch_dtype": torch.bfloat16 if device.startswith("cuda") else torch.float32,
         }
-        if device.startswith("cuda"):
+        if device.startswith("cuda") and find_spec("flash_attn") is not None:
             kwargs["attn_implementation"] = "flash_attention_2"
         self.model = OfficialEmbedder(**kwargs)
 

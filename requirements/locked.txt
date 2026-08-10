@@ -1,0 +1,41 @@
+# Python 3.11 / paper-rag direct dependency lock
+# Updated: 2026-08-10
+#
+# PyTorch and torchvision are intentionally separated into requirements/torch.txt.
+# install_locked.ps1 installs or reuses them before resolving this file.
+
+# Project foundation
+numpy==2.2.6
+PyYAML==6.0.2
+requests==2.32.5
+Pillow==11.3.0
+networkx==3.5
+
+# PDF parsing: core excludes unused vLLM/lmdeploy/S3/Gradio backends
+mineru[core]==3.4.4
+PyMuPDF==1.28.2
+
+# Qwen3-VL official runtime dependencies
+transformers==5.15.0
+accelerate==1.14.0
+qwen-vl-utils==0.0.14
+modelscope==1.39.1
+datasets==4.4.2
+decord==0.6.0
+ipykernel==7.1.0
+matplotlib==3.10.8
+ninja==1.13.0
+opencv-python-headless==4.12.0.88
+scipy==1.16.3
+setuptools==80.9.0
+
+# Graph retrieval and vector index
+torch-geometric==2.8.0.post1
+qdrant-client==1.19.0
+pcst-fast==1.0.10
+
+# API, UI and tests
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+streamlit==1.61.1
+pytest==8.4.2

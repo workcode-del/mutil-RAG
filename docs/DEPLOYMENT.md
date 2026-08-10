@@ -32,30 +32,68 @@ MinerU、PP-Chart2Table、Qwen3-VL Embedding/Reranker、PyG、Qdrant客户端、
 cd "D:\GitHub project\mutil RAG"
 conda env create -f environment.yml
 conda activate paper-rag
-python -m pip install --upgrade pip setuptools wheel
 ```
 
-CUDA机器先按照[PyTorch官方安装说明](https://pytorch.org/get-started/locally/)在当前`paper-rag`环境安装匹配CUDA的PyTorch，然后安装统一依赖：
+`environment.yml`使用清华大学`conda-forge`镜像；配置脚本通过`pip config --site`把清华PyPI地址写入当前`paper-rag`环境，不修改用户级或系统级配置：
 
-```powershell
-pip install -e ".[unified]"
+```text
+Conda: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge
+PyPI:  https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-也可以使用等价入口：
+模型权重不经过Conda/PyPI镜像。项目统一采用“本地目录优先、ModelScope下载兜底”，不会默认访问Hugging Face下载权重。下载结果缓存在`data/models`。
 
-```powershell
-pip install -r requirements/all.txt
-```
-
-Qwen3-VL Embedding与Reranker共用一个官方仓库，也安装到当前`paper-rag`环境：
+先准备Qwen官方代码：
 
 ```powershell
 New-Item -ItemType Directory -Force third_party
 git clone https://github.com/QwenLM/Qwen3-VL-Embedding.git third_party/Qwen3-VL-Embedding
-pip install -e third_party/Qwen3-VL-Embedding
 ```
 
-默认配置已经指向`third_party/Qwen3-VL-Embedding`，不需要再创建官方仓库自己的uv或Conda环境。
+然后执行固定版本安装脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_locked.ps1
+```
+
+脚本按照固定顺序执行：
+
+```text
+配置当前Conda环境的清华源
+→ 检查torch 2.8 / torchvision 0.23
+→ 缺失时安装requirements/torch.txt
+→ 安装requirements/locked.txt
+→ 用--no-deps安装本项目
+→ 用--no-deps安装Qwen官方仓库
+→ pip check
+```
+
+固定清单位于[requirements/locked.txt](../requirements/locked.txt)。其中PyTorch单独位于[requirements/torch.txt](../requirements/torch.txt)，避免pip在CUDA构建和普通依赖之间反复求解。默认清单使用`torch==2.8.0`和`torchvision==0.23.0`；若部署机需要特定CUDA wheel，可提前安装相同主版本，脚本检测通过后不会覆盖。
+
+MinerU使用`mineru[core]==3.4.4`，不再安装`mineru[all]`带来的vLLM、lmdeploy、S3和Gradio等无关后端。Qwen官方仓库用`--no-deps`安装，避免它再次求解Torch和Transformers。默认配置已经指向`third_party/Qwen3-VL-Embedding`，不需要创建官方仓库自己的uv或Conda环境。
+
+### 3.1 预下载模型
+
+统一依赖中已经包含`modelscope`。安装完成后建议在启动系统前预下载权重：
+
+```powershell
+paper-rag download-models --config configs/default.yaml `
+  --components embedding reranker
+```
+
+Qwen模型对应的ModelScope仓库：
+
+- [Qwen3-VL-Embedding-2B](https://modelscope.cn/models/Qwen/Qwen3-VL-Embedding-2B)
+- [Qwen3-VL-Reranker-2B](https://modelscope.cn/models/Qwen/Qwen3-VL-Reranker-2B)
+
+折线图模型如果确认ModelScope中存在对应仓库，可以追加`chart`：
+
+```powershell
+paper-rag download-models --config configs/default.yaml `
+  --components embedding reranker chart
+```
+
+若PP-Chart2Table没有可用的同名ModelScope仓库，应先手动准备完整模型目录，再填写`chart.local_path`。
 
 ## 4. 默认本地配置
 
@@ -67,15 +105,23 @@ runtime:
   device: cuda
   qwen3_vl_retrieval_repo: third_party/Qwen3-VL-Embedding
 
+model_download:
+  source: modelscope
+  cache_dir: data/models
+
 embedding:
   backend: qwen3_vl
   model: Qwen/Qwen3-VL-Embedding-2B
+  modelscope_id: Qwen/Qwen3-VL-Embedding-2B
+  local_path:
   dimension: 2048
 
 reranker:
   enabled: true
   backend: qwen3_vl
   model: Qwen/Qwen3-VL-Reranker-2B
+  modelscope_id: Qwen/Qwen3-VL-Reranker-2B
+  local_path:
 
 vector_store:
   mode: local
@@ -83,6 +129,36 @@ vector_store:
 ```
 
 该模式不要求启动8101、8102或Qdrant Docker服务。
+
+模型解析顺序固定为：
+
+```text
+local_path存在 → 直接返回本地绝对路径
+local_path为空或不存在 → 从ModelScope下载到data/models
+已经下载过 → ModelScope复用缓存，不重复下载
+```
+
+完全离线部署时，把模型目录写入配置并将来源改为`local`：
+
+```yaml
+model_download:
+  source: local
+  cache_dir: data/models
+
+embedding:
+  model: Qwen/Qwen3-VL-Embedding-2B
+  local_path: D:/models/Qwen3-VL-Embedding-2B
+
+reranker:
+  model: Qwen/Qwen3-VL-Reranker-2B
+  local_path: D:/models/Qwen3-VL-Reranker-2B
+
+chart:
+  model: PaddlePaddle/PP-Chart2Table_safetensors
+  local_path: D:/models/PP-Chart2Table_safetensors
+```
+
+`source: local`下路径不存在会立即报错，不会访问网络。
 
 ## 5. 离线建库
 

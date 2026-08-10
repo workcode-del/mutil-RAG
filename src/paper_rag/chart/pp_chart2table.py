@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from paper_rag.model_source import resolve_model_reference
+
 
 @dataclass(frozen=True, slots=True)
 class ChartExtractionResult:
@@ -20,12 +22,23 @@ class PPChart2TableExtractor:
         self,
         model_name: str = "PaddlePaddle/PP-Chart2Table_safetensors",
         device: int | str = 0,
+        model_source: str = "modelscope",
+        local_path: str | Path | None = None,
+        modelscope_id: str | None = None,
+        model_cache_dir: str | Path = "data/models",
     ) -> None:
         try:
             from transformers import pipeline
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("Install requirements/chart.txt in an isolated chart environment") from exc
-        self.pipe = pipeline("image-text-to-text", model=model_name, device=device)
+            raise RuntimeError("Install the unified dependencies in the paper-rag environment") from exc
+        resolved_model = resolve_model_reference(
+            model_name,
+            local_path=local_path,
+            modelscope_id=modelscope_id,
+            source=model_source,
+            cache_dir=model_cache_dir,
+        )
+        self.pipe = pipeline("image-text-to-text", model=resolved_model, device=device)
 
     def extract(self, image_path: str | Path) -> ChartExtractionResult:
         conversation = [

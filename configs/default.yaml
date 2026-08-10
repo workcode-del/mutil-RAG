@@ -8,6 +8,11 @@ runtime:
   device: cuda
   qwen3_vl_retrieval_repo: third_party/Qwen3-VL-Embedding
 
+# 模型始终先检查local_path；不存在时才从ModelScope下载到统一缓存。
+model_download:
+  source: modelscope
+  cache_dir: data/models
+
 parsing:
   backend: mineru
   sentence_locator: pymupdf
@@ -20,6 +25,9 @@ chart:
   min_classifier_confidence: 0.70
   backend: pp_chart2table
   model: PaddlePaddle/PP-Chart2Table_safetensors
+  model_source: modelscope
+  modelscope_id: PaddlePaddle/PP-Chart2Table_safetensors
+  local_path:
   self_ensemble_repeats: 3
   low_confidence_policy: retrieve_only
   baseline_model: google/deplot
@@ -27,6 +35,9 @@ chart:
 embedding:
   backend: qwen3_vl
   model: Qwen/Qwen3-VL-Embedding-2B
+  model_source: modelscope
+  modelscope_id: Qwen/Qwen3-VL-Embedding-2B
+  local_path:
   dimension: 2048
   normalize: true
   query_instruction: Retrieve scientific evidence that answers the question.
@@ -50,6 +61,9 @@ reranker:
   enabled: true
   backend: qwen3_vl
   model: Qwen/Qwen3-VL-Reranker-2B
+  model_source: modelscope
+  modelscope_id: Qwen/Qwen3-VL-Reranker-2B
+  local_path:
   top_n: 100
 
 retrieval:

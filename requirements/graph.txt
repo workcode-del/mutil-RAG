@@ -1,9 +1,9 @@
 # 可选的图检索最小依赖。主部署请使用 requirements/all.txt 单环境安装。
-numpy>=1.26,<3
-networkx>=3.4,<4
-qdrant-client>=1.18,<2
-pcst-fast>=1.0.10,<2
-PyYAML>=6,<7
-requests>=2.32,<3
-fastapi>=0.115,<1
-uvicorn[standard]>=0.34,<1
+numpy==2.2.6
+networkx==3.5
+qdrant-client==1.19.0
+pcst-fast==1.0.10
+PyYAML==6.0.2
+requests==2.32.5
+fastapi==0.141.1
+uvicorn[standard]==0.52.1

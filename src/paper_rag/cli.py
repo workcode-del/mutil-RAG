@@ -6,6 +6,7 @@ from pathlib import Path
 
 from paper_rag.config import load_yaml
 from paper_rag.evidence_graph import EvidenceGraph, load_graph, save_graph
+from paper_rag.model_source import resolve_model_reference
 from paper_rag.parsing import MinerUAdapter
 
 
@@ -59,6 +60,30 @@ def _merge_graphs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _download_models(args: argparse.Namespace) -> int:
+    config = load_yaml(args.config)
+    download = config.get("model_download", {})
+    resolved: dict[str, str] = {}
+    for component in args.components:
+        component_config = config.get(component, {})
+        if component == "reranker" and not component_config.get("enabled", True):
+            continue
+        model_id = component_config.get("model")
+        if not model_id:
+            raise ValueError(f"No model is configured for component: {component}")
+        resolved[component] = resolve_model_reference(
+            str(model_id),
+            local_path=component_config.get("local_path"),
+            modelscope_id=component_config.get("modelscope_id"),
+            source=str(
+                component_config.get("model_source", download.get("source", "modelscope"))
+            ),
+            cache_dir=download.get("cache_dir", "data/models"),
+        )
+    print(json.dumps(resolved, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="paper-rag")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -77,6 +102,18 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("output")
     merge.add_argument("inputs", nargs="+")
     merge.set_defaults(handler=_merge_graphs)
+    download = commands.add_parser(
+        "download-models",
+        help="Resolve local model directories or pre-download snapshots from ModelScope",
+    )
+    download.add_argument("--config", default="configs/default.yaml")
+    download.add_argument(
+        "--components",
+        nargs="+",
+        choices=("embedding", "reranker", "chart"),
+        default=("embedding", "reranker", "chart"),
+    )
+    download.set_defaults(handler=_download_models)
     return parser
 
 

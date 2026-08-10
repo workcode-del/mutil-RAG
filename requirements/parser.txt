@@ -1,4 +1,4 @@
 # 可选的解析模块最小依赖。主部署请使用 requirements/all.txt 单环境安装。
-mineru[all]
-PyMuPDF>=1.24,<2
-PyYAML>=6,<7
+mineru[core]==3.4.4
+PyMuPDF==1.28.2
+PyYAML==6.0.2

@@ -12,8 +12,8 @@ data/figures/*
 data/chart_tables/*
 data/index/*
 data/cache/*
+data/models/*
 !data/**/.gitkeep
 outputs/
 checkpoints/
 qdrant_storage/
-

@@ -23,6 +23,10 @@ def load_model() -> None:
         official_repo=os.getenv("QWEN3_VL_RETRIEVAL_REPO"),
         dimension=int(os.getenv("EMBEDDING_DIMENSION", "2048")),
         device=os.getenv("EMBEDDING_DEVICE", "cuda"),
+        model_source=os.getenv("MODEL_SOURCE", "modelscope"),
+        local_path=os.getenv("EMBEDDING_LOCAL_PATH"),
+        modelscope_id=os.getenv("EMBEDDING_MODELSCOPE_ID"),
+        model_cache_dir=os.getenv("MODEL_CACHE_DIR", "data/models"),
     )
 
 

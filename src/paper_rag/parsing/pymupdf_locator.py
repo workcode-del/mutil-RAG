@@ -18,7 +18,7 @@ def locate_sentence(pdf_path: str | Path, page_number: int, sentence: str) -> Lo
     try:
         import fitz
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("Install PyMuPDF in parser-env") from exc
+        raise RuntimeError("Install PyMuPDF in the paper-rag Conda environment") from exc
 
     with fitz.open(str(pdf_path)) as document:
         if page_number < 0 or page_number >= document.page_count:
@@ -37,4 +37,3 @@ def locate_sentence(pdf_path: str | Path, page_number: int, sentence: str) -> Lo
                 y1 = max(rect.y1 for rect in rectangles)
                 return LocatedSentence(page_number + 1, BoundingBox(x0, y0, x1, y1), level)
     return None
-

@@ -25,6 +25,7 @@ def main() -> None:
     backend = str(embedding.get("backend", "qwen3_vl")).lower()
     if backend in {"qwen3_vl", "local"}:
         runtime = config.get("runtime", {})
+        download = config.get("model_download", {})
         embedder = Qwen3VLEmbedder(
             model_name=embedding.get("model", "Qwen/Qwen3-VL-Embedding-2B"),
             official_repo=runtime.get("qwen3_vl_retrieval_repo")
@@ -35,6 +36,12 @@ def main() -> None:
                 "Retrieve scientific evidence that answers the question.",
             ),
             device=str(embedding.get("device", runtime.get("device", "cuda"))),
+            model_source=str(
+                embedding.get("model_source", download.get("source", "modelscope"))
+            ),
+            local_path=embedding.get("local_path"),
+            modelscope_id=embedding.get("modelscope_id"),
+            model_cache_dir=download.get("cache_dir", "data/models"),
         )
     elif backend == "http":
         embedder = HTTPEmbedder(

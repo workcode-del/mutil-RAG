@@ -1,9 +1,10 @@
 # 可选的检索模型最小依赖。主部署请使用 requirements/all.txt 单环境安装。
 # 官方仓库安装到同一个环境，不再要求单独创建uv环境。
-transformers>=4.57.3,<6
-accelerate>=1.12,<2
-qwen-vl-utils>=0.0.14
-Pillow>=10,<13
-numpy>=1.26,<3
-fastapi>=0.115,<1
-uvicorn[standard]>=0.34,<1
+transformers==5.15.0
+accelerate==1.14.0
+qwen-vl-utils==0.0.14
+modelscope==1.39.1
+Pillow==11.3.0
+numpy==2.2.6
+fastapi==0.141.1
+uvicorn[standard]==0.52.1

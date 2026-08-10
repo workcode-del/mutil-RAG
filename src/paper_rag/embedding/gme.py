@@ -8,8 +8,8 @@ import numpy as np
 class GMEEmbedder:
     """Thin adapter over Alibaba-NLP GME official remote-code interface.
 
-    Keep this class in embedding-env with transformers==4.51.3. The graph environment
-    consumes cached arrays and never imports this model.
+    Historical baseline adapter. Install its compatible dependency versions in the
+    same paper-rag Conda environment only when running the GME comparison experiment.
     """
 
     dimension = 1536
@@ -23,7 +23,7 @@ class GMEEmbedder:
         try:
             from transformers import AutoModel
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("Install embedding-env dependencies before loading GME") from exc
+            raise RuntimeError("Install the GME baseline dependencies in paper-rag") from exc
         self.model = AutoModel.from_pretrained(
             model_name,
             trust_remote_code=True,
@@ -57,4 +57,3 @@ class GMEEmbedder:
             raise ValueError(f"Expected [batch, 1536] GME embeddings, got {result.shape}")
         norms = np.linalg.norm(result, axis=1, keepdims=True)
         return result / np.maximum(norms, 1e-12)
-

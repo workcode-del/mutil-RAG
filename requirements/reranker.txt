@@ -1,8 +1,9 @@
 # 可选的重排器最小依赖。主部署请使用 requirements/all.txt 单环境安装。
 # Embedding和Reranker默认在同一进程；HTTP拆分仅是低显存备选模式。
-transformers>=4.57.3,<6
-accelerate>=1.12,<2
-qwen-vl-utils>=0.0.14
-numpy>=1.26,<3
-fastapi>=0.115,<1
-uvicorn[standard]>=0.34,<1
+transformers==5.15.0
+accelerate==1.14.0
+qwen-vl-utils==0.0.14
+modelscope==1.39.1
+numpy==2.2.6
+fastapi==0.141.1
+uvicorn[standard]==0.52.1

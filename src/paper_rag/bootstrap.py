@@ -25,6 +25,7 @@ def build_deployed_pipeline(
     config = load_yaml(config_path)
     graph = load_graph(graph_path)
     runtime_config = config.get("runtime", {})
+    download_config = config.get("model_download", {})
     embed_config = config["embedding"]
     vector_config = config["vector_store"]
     retrieve_config = config["retrieval"]
@@ -43,6 +44,12 @@ def build_deployed_pipeline(
                 "Retrieve scientific evidence that answers the question.",
             ),
             device=str(embed_config.get("device", runtime_device)),
+            model_source=str(
+                embed_config.get("model_source", download_config.get("source", "modelscope"))
+            ),
+            local_path=embed_config.get("local_path"),
+            modelscope_id=embed_config.get("modelscope_id"),
+            model_cache_dir=download_config.get("cache_dir", "data/models"),
         )
     elif embedding_backend == "http":
         embedder = HTTPEmbedder(
@@ -89,6 +96,14 @@ def build_deployed_pipeline(
                 model_name=reranker_config.get("model", "Qwen/Qwen3-VL-Reranker-2B"),
                 official_repo=official_repo,
                 device=str(reranker_config.get("device", runtime_device)),
+                model_source=str(
+                    reranker_config.get(
+                        "model_source", download_config.get("source", "modelscope")
+                    )
+                ),
+                local_path=reranker_config.get("local_path"),
+                modelscope_id=reranker_config.get("modelscope_id"),
+                model_cache_dir=download_config.get("cache_dir", "data/models"),
             )
         elif reranker_backend == "http":
             reranker = HTTPReranker(reranker_config["service_url"])

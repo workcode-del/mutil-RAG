@@ -1,6 +1,7 @@
 name: paper-rag
 channels:
-  - conda-forge
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge
+  - nodefaults
 dependencies:
   - python=3.11
   - pip>=24
@@ -9,5 +10,4 @@ dependencies:
 
 # 创建环境后，在仓库根目录执行：
 #   conda activate paper-rag
-#   pip install -e ".[unified]"
-# CUDA版PyTorch应按部署机器的CUDA版本先安装到这个环境中。
+#   powershell -ExecutionPolicy Bypass -File scripts/install_locked.ps1

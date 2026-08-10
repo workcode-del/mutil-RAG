@@ -295,7 +295,7 @@ def build_document():
     set_repeat_table_header(table.rows[0])
     rows = [
         ("PDF解析与定位", "MinerU2.5 + PyMuPDF", "抽取句子、图片、图注及bbox并回链PDF。", ["https://arxiv.org/abs/2509.22186"]),
-        ("折线图结构化", "PP-Chart2Table + 自集成", "重复解析、数值中位数聚合并记录不确定性。", ["https://huggingface.co/docs/transformers/main/model_doc/pp_chart2table", "https://arxiv.org/abs/2605.27298"]),
+        ("折线图结构化", "外部多模态API + 自集成；PP-Chart2Table作独立基线", "重复解析、数值中位数聚合并记录不确定性；避免与MinerU的Transformers版本冲突。", ["https://huggingface.co/docs/transformers/main/model_doc/pp_chart2table", "https://arxiv.org/abs/2605.27298"]),
         ("多模态基础召回", "Qwen3-VL-Embedding-2B", "统一编码文本、原图与查询；Qdrant分类型召回。", ["https://arxiv.org/abs/2601.04720"]),
         ("结构增强索引", "两层HGT + 关系监督", "利用Figure-Caption-Mention-ChartData真实结构边。", ["https://arxiv.org/abs/2003.01332", "https://arxiv.org/abs/2602.04263"]),
         ("原图精排", "Qwen3-VL-Reranker-2B", "直接输入文本、原图或混合证据，使用RRF融合。", ["https://arxiv.org/abs/2601.04720"]),

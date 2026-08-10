@@ -1,211 +1,139 @@
-# 单环境部署与运行
+# Linux单环境部署与研究路线
 
-## 1. 部署原则
+## 1. 运行边界
 
-本项目的默认部署方式是：**一个名称可自定义的Python 3.11 Conda环境、一个代码仓库、一个主配置文件**。`paper-rag`和`paper-rag-serve`是安装后的命令名，与Conda环境名称无关。
+- 系统：Linux x86-64，推荐Ubuntu 22.04/24.04，Python 3.11；
+- 环境：只使用一个名称可自定义的Conda环境，以下用`rag-thesis`示例；
+- `paper-rag`和`paper-rag-serve`是程序命令名，不是Conda环境名；
+- 主环境固定`transformers==4.57.6`，同时满足MinerU 3.4.4的`<5`约束和Qwen3-VL检索的`>=4.57.3`约束；
+- 折线图解析默认调用OpenAI-compatible多模态API。PP-Chart2Table依赖Transformers 5.x，只作为独立服务/对比基线，不装进主环境。
 
-MinerU、PP-Chart2Table、Qwen3-VL Embedding/Reranker、PyG、Qdrant客户端、PCST、API和界面都安装在同一个Conda环境中。模块仍然保持代码隔离，但不再要求切换parser/chart/graph/model等多个环境。
-
-默认在线模式把Embedding和Reranker直接加载到检索API进程。`configs/server.yaml`保留HTTP模式，仅用于显存不足、远程GPU或后期生产部署，不是论文原型的必需步骤。
-
-```text
-同一个Conda环境：名称自定义（示例：rag-thesis）
-  ├─ MinerU/PyMuPDF：PDF解析
-  ├─ PP-Chart2Table：折线图结构化
-  ├─ Qwen3-VL：向量与重排
-  ├─ PyG/PCST/Qdrant：图索引与EC-BFR
-  └─ FastAPI/Streamlit：系统接口与界面
-```
-
-## 2. 平台建议
-
-- Python：3.11；
-- GPU：CUDA环境优先，CPU只能用于接口和小数据检查；
-- 部署系统：Linux x86-64，推荐Ubuntu 22.04/24.04；
-- 生成模型优先使用OpenAI-compatible外部API，避免同一张GPU再常驻一个生成模型。
-
-## 3. 一次性安装
-
-先安装Linux系统库：
+## 2. 安装
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential git curl libgl1 libglib2.0-0 libgomp1 fontconfig fonts-noto-cjk
-```
+sudo apt-get install -y build-essential git curl libgl1 libglib2.0-0 \
+  libgomp1 fontconfig fonts-noto-cjk
 
-在安装了Miniconda或Anaconda的Shell中：
-
-```bash
 cd /path/to/mutil-RAG
 conda env create --name rag-thesis --file environment.yml
 conda activate rag-thesis
-```
 
-示例中的`rag-thesis`可以替换为任意合法环境名。`environment.yml`保留`paper-rag`作为未传`--name`时的默认值；命令行的`--name`会覆盖它。该文件使用清华大学`conda-forge`镜像；配置脚本通过`pip config --site`把清华PyPI地址写入当前激活环境，不修改用户级或系统级配置：
-
-```text
-Conda: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge
-PyPI:  https://pypi.tuna.tsinghua.edu.cn/simple
-```
-
-模型权重不经过Conda/PyPI镜像。项目统一采用“本地目录优先、ModelScope下载兜底”，不会默认访问Hugging Face下载权重。下载结果缓存在`data/models`。
-
-先准备Qwen官方代码：
-
-```bash
 mkdir -p third_party
-git clone https://github.com/QwenLM/Qwen3-VL-Embedding.git third_party/Qwen3-VL-Embedding
-```
-
-然后执行固定版本安装脚本：
-
-```bash
+git clone https://github.com/QwenLM/Qwen3-VL-Embedding.git \
+  third_party/Qwen3-VL-Embedding
 bash scripts/install_locked.sh
 ```
 
-脚本按照固定顺序执行：
-
-```text
-配置当前Conda环境的清华源
-→ 检查torch 2.8 / torchvision 0.23
-→ 缺失时安装requirements/torch.txt
-→ 安装requirements/locked.txt
-→ 用--no-deps安装本项目
-→ 用--no-deps安装Qwen官方仓库
-→ pip check
-```
-
-固定清单位于[requirements/locked.txt](../requirements/locked.txt)。其中PyTorch单独位于[requirements/torch.txt](../requirements/torch.txt)，避免pip在CUDA构建和普通依赖之间反复求解。默认清单使用`torch==2.8.0`和`torchvision==0.23.0`；若部署机需要特定CUDA wheel，可提前安装相同主版本，脚本检测通过后不会覆盖。
-
-MinerU使用`mineru[core]==3.4.4`，不再安装`mineru[all]`带来的vLLM、lmdeploy、S3和Gradio等无关后端。Qwen官方仓库用`--no-deps`安装，避免它再次求解Torch和Transformers。默认配置已经指向`third_party/Qwen3-VL-Embedding`，不需要创建官方仓库自己的uv或Conda环境。
-
-### 3.1 预下载模型
-
-统一依赖中已经包含`modelscope`。安装完成后建议在启动系统前预下载权重：
+安装脚本只向当前环境写入清华Conda/PyPI源，不允许安装到`base`。模型优先读取`configs/default.yaml`中的`local_path`；路径为空时从ModelScope下载：
 
 ```bash
 paper-rag download-models --config configs/default.yaml \
   --components embedding reranker
 ```
 
-Qwen模型对应的ModelScope仓库：
-
-- [Qwen3-VL-Embedding-2B](https://modelscope.cn/models/Qwen/Qwen3-VL-Embedding-2B)
-- [Qwen3-VL-Reranker-2B](https://modelscope.cn/models/Qwen/Qwen3-VL-Reranker-2B)
-
-折线图模型如果确认ModelScope中存在对应仓库，可以追加`chart`：
+若之前遇到Transformers冲突，更新代码后在已激活环境中重新执行：
 
 ```bash
-paper-rag download-models --config configs/default.yaml \
-  --components embedding reranker chart
+python -m pip install --upgrade "transformers==4.57.6"
+bash scripts/install_locked.sh
+python -m pip check
 ```
 
-若PP-Chart2Table没有可用的同名ModelScope仓库，应先手动准备完整模型目录，再填写`chart.local_path`。
+## 3. 从PDF到系统的完整衔接
 
-## 4. 默认本地配置
+| 步骤 | 需要的输入/组件 | 命令 | 生成物 | 交给下一步 |
+|---|---|---|---|---|
+| 1. PDF解析 | `data/pdfs/*.pdf`；MinerU | `mineru` | `*_content_list.json`和图片 | 构图 |
+| 2. 细粒度构图 | MinerU JSON | `paper-rag parse-mineru` | 单篇证据图JSON | 折线图增强 |
+| 3. 折线图增强 | 图JSON、折线图清单；多模态API或人工CSV | `list-figures`、`enrich-charts` | 含ChartData的图JSON | 多论文合并 |
+| 4. 多论文合并 | 多个增强图 | `merge-graphs` | `evidence_graph.json` | 向量索引/HGT |
+| 5. 多模态基础索引 | 合并图、Qwen3-VL Embedding | `index_graph.py` | Qdrant目录、2048维NPZ | HGT训练/在线召回 |
+| 6. 结构化索引训练 | 查询正负证据标注、2048维NPZ | `embed_training_queries.py`、`train_srmg.py` | 256维HGT图索引 | 在线结构增强 |
+| 7. 检索与回答 | 图、Qdrant、HGT、Reranker | `paper-rag-serve` | 最小证据森林、回答和证据ID | 系统展示/评测 |
+| 8. 实验评测 | 查询及`relevant_node_ids` | `evaluate_retrieval.py` | Precision/Recall/F1和预算违规率 | 论文实验表 |
 
-`configs/default.yaml`的关键配置为：
+### 3.1 PDF解析
 
-```yaml
-runtime:
-  mode: local
-  device: cuda
-  qwen3_vl_retrieval_repo: third_party/Qwen3-VL-Embedding
-
-model_download:
-  source: modelscope
-  cache_dir: data/models
-
-embedding:
-  backend: qwen3_vl
-  model: Qwen/Qwen3-VL-Embedding-2B
-  modelscope_id: Qwen/Qwen3-VL-Embedding-2B
-  local_path:
-  dimension: 2048
-
-reranker:
-  enabled: true
-  backend: qwen3_vl
-  model: Qwen/Qwen3-VL-Reranker-2B
-  modelscope_id: Qwen/Qwen3-VL-Reranker-2B
-  local_path:
-
-vector_store:
-  mode: local
-  path: data/index/qdrant
-```
-
-该模式不要求启动8101、8102或Qdrant Docker服务。
-
-模型解析顺序固定为：
-
-```text
-local_path存在 → 直接返回本地绝对路径
-local_path为空或不存在 → 从ModelScope下载到data/models
-已经下载过 → ModelScope复用缓存，不重复下载
-```
-
-完全离线部署时，把模型目录写入配置并将来源改为`local`：
-
-```yaml
-model_download:
-  source: local
-  cache_dir: data/models
-
-embedding:
-  model: Qwen/Qwen3-VL-Embedding-2B
-  local_path: /data/models/Qwen3-VL-Embedding-2B
-
-reranker:
-  model: Qwen/Qwen3-VL-Reranker-2B
-  local_path: /data/models/Qwen3-VL-Reranker-2B
-
-chart:
-  model: PaddlePaddle/PP-Chart2Table_safetensors
-  local_path: /data/models/PP-Chart2Table_safetensors
-```
-
-`source: local`下路径不存在会立即报错，不会访问网络。
-
-## 5. 离线建库
-
-所有命令都在同一个已激活的项目Conda环境中执行。若采用上面的示例名称，每次打开新终端先运行`conda activate rag-thesis`。
-
-### 5.1 PDF解析
-
-按照[MinerU官方代码](https://github.com/opendatalab/MinerU)解析PDF，得到`content_list.json`和图片目录。随后规范化为证据图：
+输入：论文PDF。外部组件：[MinerU](https://github.com/opendatalab/MinerU)。国内下载模型时使用ModelScope：
 
 ```bash
-paper-rag parse-mineru data/parsed/paper1_content_list.json \
-  data/parsed/paper1_graph.json --paper-id paper1
+mkdir -p data/pdfs data/mineru data/parsed
+export MINERU_MODEL_SOURCE=modelscope
+mineru -p data/pdfs -o data/mineru -b pipeline
+find data/mineru -name '*_content_list.json'
+```
+
+对每篇论文执行，输入路径替换为`find`显示的真实文件：
+
+```bash
+paper-rag parse-mineru data/mineru/paper1/paper1_content_list.json \
+  data/parsed/paper1_graph.json --paper-id paper1 \
+  --pdf data/pdfs/paper1.pdf
 paper-rag inspect-graph data/parsed/paper1_graph.json
 ```
 
-多篇论文图合并：
+`--pdf`让PyMuPDF把MinerU块级位置细化为句级bbox；命令输出中的`sentence_locations`是成功定位数量。最终图包含Sentence、Figure、Caption节点以及`caption_of`、`refers_to`等边，并保留页码、bbox和图片路径。这是创新点一的异构证据图原料。
+
+### 3.2 只处理折线图
+
+先导出全部图片节点：
+
+```bash
+paper-rag list-figures data/parsed/paper1_graph.json \
+  data/parsed/paper1_line_charts.jsonl
+```
+
+人工查看`image_path`，删除非折线图行。保留行至少包含：
+
+```json
+{"figure_id":"paper1:figure:12"}
+```
+
+自动解析需要一个支持图片输入的OpenAI-compatible接口。设置`configs/default.yaml`中的`chart.base_url`和`chart.model`，需要密钥时执行：
+
+```bash
+export PAPER_RAG_API_KEY='你的密钥'
+paper-rag enrich-charts data/parsed/paper1_graph.json \
+  data/parsed/paper1_line_charts.jsonl \
+  data/parsed/paper1_enriched.json \
+  --config configs/default.yaml
+```
+
+程序对每张图重复解析3次，按单元格聚合并记录不确定性，生成ChartData节点和`derived_from`边。没有API时，可在清单中人工填写`linearized_table`，程序将直接入图：
+
+```json
+{"figure_id":"paper1:figure:12","linearized_table":"strain,stress_MPa\n0.01,420\n0.02,510","confidence":1.0}
+```
+
+### 3.3 合并论文并建立多模态索引
 
 ```bash
 paper-rag merge-graphs data/parsed/evidence_graph.json \
-  data/parsed/paper1_graph.json data/parsed/paper2_graph.json
-```
+  data/parsed/paper1_enriched.json data/parsed/paper2_enriched.json
 
-当前折线图模块与句级bbox回填仍需进一步接入该建库命令；在接通前不能把`ChartData`和句级定位当作已完成的部署能力。
-
-### 5.2 建立Qdrant索引
-
-脚本会在当前进程直接加载Qwen3-VL Embedding，不再依赖Embedding HTTP服务：
-
-```bash
 paper-rag validate-config configs/default.yaml
 python scripts/index_graph.py data/parsed/evidence_graph.json \
   --config configs/default.yaml \
   --embedding-cache outputs/base_embeddings.npz
 ```
 
-Qwen3-VL使用2048维向量。旧的1536维索引不能复用。
+输出：`data/index/qdrant`保存分类向量索引，`outputs/base_embeddings.npz`保存所有句子、图、图注和ChartData的2048维向量。前者用于在线召回，后者用于HGT训练。
 
-### 5.3 训练HGT
+### 3.4 训练创新点一：结构监督HGT索引
+
+准备`data/train/query_pairs.jsonl`。正负节点ID必须存在于`evidence_graph.json`：
+
+```json
+{"query_id":"q1","query":"达到500 MPa强度的材料有哪些？","positive_node_id":"paper1:sentence:8:1","negative_node_id":"paper1:sentence:3:0"}
+```
+
+公开数据可从带证据标注的QA样本转换；私有数据可人工标注少量查询。只有答案、没有证据位置的数据不能直接训练或评测细粒度检索。
 
 ```bash
+python scripts/embed_training_queries.py data/train/query_pairs.jsonl \
+  outputs/query_embeddings.npz --config configs/default.yaml
+
 python scripts/train_srmg.py \
   data/parsed/evidence_graph.json outputs/base_embeddings.npz \
   --query-samples data/train/query_pairs.jsonl \
@@ -213,11 +141,9 @@ python scripts/train_srmg.py \
   --output outputs/srmg_index --epochs 20 --device cuda
 ```
 
-正式训练必须同时提供查询正负样本和查询Embedding，否则查询投影头没有有效监督。
+输出`graph_embeddings.npy`、`node_ids.json`和`query_projector.pt`。它们把Figure-Caption-Mention-ChartData关系变成结构监督分数，实现创新点一“多模态结构化索引”。
 
-## 6. 单命令启动在线系统
-
-设置证据图和HGT产物后，在同一个环境用统一入口启动一个API进程：
+### 3.5 运行创新点二和完整系统
 
 ```bash
 paper-rag-serve \
@@ -227,47 +153,63 @@ paper-rag-serve \
   --host 127.0.0.1 --port 8000
 ```
 
-该进程会依次加载：本地证据图、本地Qdrant、Qwen3-VL Embedding、HGT缓存和Qwen3-VL Reranker。
-
-需要生成答案时增加`--enable-generator`；仅做召回消融时可增加`--disable-reranker`。
-
-健康检查与查询：
+查询：
 
 ```bash
-curl http://127.0.0.1:8000/health
-
 curl -X POST http://127.0.0.1:8000/query \
   -H 'Content-Type: application/json' \
   -d '{
-    "query": "达到500 MPa强度的材料有哪些？",
-    "metric": "strength",
-    "value": 500,
-    "unit": "MPa"
+    "query":"达到500 MPa强度的材料有哪些？",
+    "metric":"strength",
+    "value":500,
+    "unit":"MPa"
   }'
 ```
 
-## 7. 显存不足时的可选方式
+在线流程为：分类向量召回 → HGT结构分数 → Qwen3-VL原图重排 → PCST候选骨架 → 证据闭包 → 重算文本/图片成本 → 预算内选择跨论文证据森林。返回的`forest`、`total_cost`和证据ID直接体现创新点二“证据闭包与预算约束检索”。
 
-“单环境”和“单进程”不是同一件事。如果两套2B模型无法同时进入显存，可以仍然只维护当前项目Conda环境，但在同一环境启动Embedding、Reranker和检索三个进程，并使用`configs/server.yaml`。
+如需自然语言回答，先确保`generation.base_url`指向可用的OpenAI-compatible多模态模型服务，再增加`--enable-generator`。不启用时系统仍完整返回可评测的证据森林。
 
-这种方式不复制代码、不创建新环境，只隔离模型进程：
+### 3.6 公开数据和私有数据评测
 
-```bash
-python -m uvicorn services.embedding_api:app --port 8101
-python -m uvicorn services.reranker_api:app --port 8102
-python -m uvicorn services.retrieval_api:app --port 8000
+把SciGraphQA、SciVQA或自建样本统一成JSONL，并把原始证据位置映射为本系统node_id：
+
+```json
+{"query_id":"test-1","query":"Which material exceeds 500 MPa?","relevant_node_ids":["paper1:sentence:8:1","paper1:figure:12"]}
 ```
 
-## 8. 静态验收门
+```bash
+python scripts/evaluate_retrieval.py data/eval/public.jsonl \
+  --graph data/parsed/evidence_graph.json \
+  --config configs/default.yaml \
+  --hgt-artifacts outputs/srmg_index \
+  --output outputs/public_metrics.json
 
-当前设备不能运行模型时，至少检查：
+python scripts/evaluate_retrieval.py data/eval/private.jsonl \
+  --graph data/parsed/evidence_graph.json \
+  --config configs/default.yaml \
+  --hgt-artifacts outputs/srmg_index \
+  --output outputs/private_metrics.json
+```
 
-1. `configs/default.yaml`为本地backend；
-2. Embedding/Qdrant/HGT输入均为2048维，HGT输出为256维；
-3. 图中node_id唯一，边的端点都存在；
-4. HGT训练提供query samples和query embeddings；
-5. PCST正式实验记录`pcst_fast`后端，而不是fallback；
-6. 闭包后森林成本不超过预算；
-7. 生成器引用ID必须属于当前证据森林。
+消融实验：去掉`--hgt-artifacts`得到“无结构索引”；增加`--disable-reranker`得到“无多模态重排”。两者均与完整系统使用同一份图和评测数据。
 
-这些检查只能验证代码契约，不等同于GPU模型已经成功运行。
+## 4. 外部组件清单
+
+| 组件 | 是否必须 | 用途 |
+|---|---|---|
+| MinerU | 必须 | PDF转结构化块、图片、页码和bbox |
+| Qwen3-VL-Embedding/Reranker官方仓库 | 必须 | 多模态召回与原图重排 |
+| ModelScope | 本地无模型时必须 | 下载并缓存模型权重 |
+| OpenAI-compatible多模态API | 折线图自动解析、生成答案时需要 | 图转CSV和最终答案；可用云API或独立模型服务 |
+| PP-Chart2Table | 非必须、仅基线 | 依赖Transformers 5.x，应独立部署，不能与MinerU主环境混装 |
+
+## 5. 当前验收标准
+
+1. `pip check`无冲突，`transformers`版本为4.57.6；
+2. 合并图中node_id唯一，边端点存在，折线图具有ChartData→Figure来源边；
+3. Qdrant和基础NPZ均为2048维，HGT产物为256维；
+4. 训练样本的正负节点ID和评测样本的证据ID均存在于同一版图中；
+5. 查询结果`total_cost`不超过配置预算，回答引用ID必须属于返回森林。
+
+当前设备不能运行模型时只能完成静态检查；GPU模型、MinerU解析质量和API连通性必须在Linux部署机上实测。

@@ -4,14 +4,37 @@ import argparse
 import json
 from pathlib import Path
 
+from paper_rag.chart import OpenAICompatibleChartExtractor, SelfEnsemblingChartExtractor
 from paper_rag.config import load_yaml
-from paper_rag.evidence_graph import EvidenceGraph, load_graph, save_graph
+from paper_rag.domain import NodeType
+from paper_rag.evidence_graph import (
+    EvidenceGraph,
+    attach_chart_data,
+    build_figure_text_views,
+    load_graph,
+    save_graph,
+)
 from paper_rag.model_source import resolve_model_reference
-from paper_rag.parsing import MinerUAdapter
+from paper_rag.parsing import MinerUAdapter, locate_sentence_batch
 
 
 def _parse_mineru(args: argparse.Namespace) -> int:
     parsed = MinerUAdapter().from_json(args.input, args.paper_id)
+    located = {}
+    if args.pdf:
+        located = locate_sentence_batch(
+            args.pdf,
+            (
+                (node.node_id, node.page, node.text or "")
+                for node in parsed.nodes.values()
+                if node.node_type is NodeType.SENTENCE and node.page is not None
+            ),
+        )
+        for node_id, location in located.items():
+            node = parsed.nodes[node_id]
+            node.page = location.page
+            node.bbox = location.bbox
+            node.provenance["location_level"] = location.level
     graph = EvidenceGraph()
     graph.extend(parsed.nodes.values(), parsed.edges)
     save_graph(graph, args.output)
@@ -22,6 +45,7 @@ def _parse_mineru(args: argparse.Namespace) -> int:
                 "nodes": len(parsed.nodes),
                 "edges": len(parsed.edges),
                 "warnings": parsed.warnings,
+                "sentence_locations": len(located),
                 "output": str(Path(args.output).resolve()),
             },
             ensure_ascii=False,
@@ -37,6 +61,27 @@ def _inspect_graph(args: argparse.Namespace) -> int:
     for node in graph.nodes.values():
         by_type[node.node_type.value] = by_type.get(node.node_type.value, 0) + 1
     print(json.dumps({"nodes": len(graph.nodes), "edges": len(graph.edges), "by_type": by_type}, indent=2))
+    return 0
+
+
+def _list_figures(args: argparse.Namespace) -> int:
+    graph = load_graph(args.graph)
+    rows = [
+        {
+            "figure_id": node.node_id,
+            "paper_id": node.paper_id,
+            "page": node.page,
+            "image_path": node.image_path,
+        }
+        for node in graph.nodes.values()
+        if node.node_type is NodeType.FIGURE
+    ]
+    target = Path(args.output)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8") as stream:
+        for row in rows:
+            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+    print(f"Wrote {len(rows)} figure candidates: {target.resolve()}")
     return 0
 
 
@@ -66,6 +111,9 @@ def _download_models(args: argparse.Namespace) -> int:
     resolved: dict[str, str] = {}
     for component in args.components:
         component_config = config.get(component, {})
+        if component == "chart" and component_config.get("backend") == "openai_compatible":
+            resolved[component] = f"external-api:{component_config.get('model', '')}"
+            continue
         if component == "reranker" and not component_config.get("enabled", True):
             continue
         model_id = component_config.get("model")
@@ -84,6 +132,82 @@ def _download_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_jsonl(path: str | Path) -> list[dict]:
+    with Path(path).open("r", encoding="utf-8") as stream:
+        return [json.loads(line) for line in stream if line.strip()]
+
+
+def _enrich_charts(args: argparse.Namespace) -> int:
+    graph = load_graph(args.graph)
+    entries = _read_jsonl(args.manifest)
+    config = load_yaml(args.config)
+    chart_config = config.get("chart", {})
+    extractor = None
+    reports: list[dict[str, object]] = []
+
+    for entry in entries:
+        figure_id = str(entry["figure_id"])
+        if "linearized_table" in entry:
+            table = str(entry["linearized_table"])
+            status = str(entry.get("parse_status", "provided"))
+            confidence = float(entry.get("confidence", 1.0))
+            uncertainty = entry.get("uncertainty")
+            extractor_name = str(entry.get("extractor", "manifest"))
+        else:
+            if extractor is None:
+                backend = str(chart_config.get("backend", "openai_compatible"))
+                if backend != "openai_compatible":
+                    raise ValueError(
+                        "The unified environment supports chart backend=openai_compatible. "
+                        "PP-Chart2Table requires Transformers 5.x and must be exposed as an "
+                        "external service or used only in a separate baseline environment."
+                    )
+                base = OpenAICompatibleChartExtractor(
+                    base_url=str(chart_config["base_url"]),
+                    model=str(chart_config["model"]),
+                    api_key_env=str(chart_config.get("api_key_env", "PAPER_RAG_API_KEY")),
+                    timeout=float(chart_config.get("timeout", 120)),
+                    temperature=float(chart_config.get("temperature", 0.2)),
+                )
+                extractor = SelfEnsemblingChartExtractor(
+                    base.extract,
+                    repeats=int(chart_config.get("self_ensemble_repeats", 3)),
+                )
+            figure = graph.nodes.get(figure_id)
+            if figure is None:
+                raise KeyError(f"Unknown figure_id in chart manifest: {figure_id}")
+            result = extractor.extract(figure.image_path or "")
+            table = result.linearized_table
+            status = result.parse_status
+            confidence = float(result.confidence or 0.0)
+            uncertainty = result.uncertainty
+            extractor_name = result.extractor
+
+        chart_node_id = attach_chart_data(
+            graph,
+            figure_id,
+            table,
+            status,
+            confidence=confidence,
+            extractor=extractor_name,
+            uncertainty=float(uncertainty) if uncertainty is not None else None,
+        )
+        reports.append(
+            {
+                "figure_id": figure_id,
+                "chart_node_id": chart_node_id,
+                "status": status,
+                "confidence": confidence,
+            }
+        )
+
+    build_figure_text_views(graph)
+    save_graph(graph, args.output)
+    summary = {"charts": reports, "output": str(Path(args.output).resolve())}
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="paper-rag")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -91,10 +215,17 @@ def build_parser() -> argparse.ArgumentParser:
     parse.add_argument("input")
     parse.add_argument("output")
     parse.add_argument("--paper-id")
+    parse.add_argument("--pdf", help="Original PDF used to refine sentence-level bbox")
     parse.set_defaults(handler=_parse_mineru)
     inspect = commands.add_parser("inspect-graph", help="Show graph schema statistics")
     inspect.add_argument("graph")
     inspect.set_defaults(handler=_inspect_graph)
+    figures = commands.add_parser(
+        "list-figures", help="Export figure IDs for manual line-chart filtering"
+    )
+    figures.add_argument("graph")
+    figures.add_argument("output")
+    figures.set_defaults(handler=_list_figures)
     validate = commands.add_parser("validate-config")
     validate.add_argument("config", nargs="?", default="configs/default.yaml")
     validate.set_defaults(handler=_validate_config)
@@ -114,6 +245,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=("embedding", "reranker", "chart"),
     )
     download.set_defaults(handler=_download_models)
+    enrich = commands.add_parser(
+        "enrich-charts",
+        help="Attach line-chart tables from a manifest or an external multimodal API",
+    )
+    enrich.add_argument("graph", help="Input evidence graph JSON")
+    enrich.add_argument("manifest", help="JSONL with figure_id and optional linearized_table")
+    enrich.add_argument("output", help="Output graph containing ChartData nodes")
+    enrich.add_argument("--config", default="configs/default.yaml")
+    enrich.set_defaults(handler=_enrich_charts)
     return parser
 
 

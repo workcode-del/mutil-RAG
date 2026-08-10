@@ -23,14 +23,19 @@ chart:
   enabled: true
   accept_types: [line_chart]
   min_classifier_confidence: 0.70
-  backend: pp_chart2table
-  model: PaddlePaddle/PP-Chart2Table_safetensors
-  model_source: modelscope
-  modelscope_id: PaddlePaddle/PP-Chart2Table_safetensors
-  local_path:
+  # 主环境中的Transformers 4.57.6需同时兼容MinerU与Qwen检索。
+  # PP-Chart2Table依赖Transformers 5.x，因此默认通过外部多模态API解析折线图。
+  backend: openai_compatible
+  base_url: http://localhost:8001/v1
+  model: Qwen/Qwen3-VL-4B-Instruct
+  api_key_env: PAPER_RAG_API_KEY
+  timeout: 120
+  temperature: 0.2
   self_ensemble_repeats: 3
   low_confidence_policy: retrieve_only
-  baseline_model: google/deplot
+  baseline_models:
+    - google/deplot
+    - PaddlePaddle/PP-Chart2Table_safetensors
 
 embedding:
   backend: qwen3_vl

@@ -1,3 +1,3 @@
 # 兼容入口。实际固定版本位于 locked.txt。
-# 先用Conda安装pytorch=2.8和torchvision=0.23，再安装本文件。
+# 推荐直接执行scripts/install_locked.sh；它先处理torch.txt，再安装本文件。
 -r locked.txt

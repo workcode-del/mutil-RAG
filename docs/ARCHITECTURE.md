@@ -5,7 +5,7 @@
 | 环境/服务 | 主要依赖 | 输入 | 输出 |
 |---|---|---|---|
 | parser | 当前MinerU（论文依据MinerU2.5）、PyMuPDF | PDF | 规范证据图JSON、Figure图片、page/bbox |
-| chart | PP-Chart2Table或外部VLM | 仅折线图图片 | ChartData、置信度、不确定性、来源 |
+| chart | 外部OpenAI-compatible VLM；PP-Chart2Table仅作独立基线 | 仅折线图图片 | ChartData、置信度、不确定性、来源 |
 | embedding | Qwen3-VL-Embedding-2B | query、文本、图片 | 2048维归一化向量 |
 | reranker | Qwen3-VL-Reranker-2B | query与文本/原图/混合证据 | 相关性分数 |
 | graph | PyG、Qdrant、pcst_fast | 证据图、缓存向量、query | 候选节点、闭包证据森林 |
@@ -87,7 +87,7 @@ PCST是候选生成器而非创新本身。MAGE-RAG已经研究预算化多模�
 
 ## 5. 图表解析
 
-主后端为PP-Chart2Table；也可把Qwen3-VL或外部API包装成相同接口。训练无关的自集成层对同一图重复解析3次，对齐表格后对数值单元格取中位数，并把结果分歧转成uncertainty。低置信度数值可以参与召回，但回答精确数值时必须同时展示原图并标注不确定性。
+主环境使用OpenAI-compatible多模态API，PP-Chart2Table因依赖Transformers 5.x只作为独立服务或对比基线。训练无关的自集成层对同一图重复解析3次，对齐表格后对数值单元格取中位数，并把结果分歧转成uncertainty。低置信度数值可以参与召回，但回答精确数值时必须同时展示原图并标注不确定性。
 
 DePlot保留为2023传统基线，不再是主后端。只处理折线图，架构图、流程图和显微图不进入ChartData解析。
 

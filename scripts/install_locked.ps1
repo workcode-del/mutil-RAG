@@ -33,6 +33,8 @@ python -m pip install `
     --timeout 120 `
     -r requirements/locked.txt
 
+python -c "import transformers; assert transformers.__version__ == '4.57.6', transformers.__version__"
+
 # 项目自身及Qwen官方适配仓库不再触发第二轮依赖求解。
 python -m pip install --no-deps -e .
 

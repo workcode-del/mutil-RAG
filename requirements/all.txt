@@ -1,4 +1,4 @@
-# 主部署入口：所有模块安装到同一个 Python 3.11 虚拟环境。
+# 主部署入口：所有模块安装到同一个名为 paper-rag 的 Python 3.11 Conda环境。
 # CUDA机器如需指定PyTorch CUDA wheel，请先按PyTorch官网命令安装torch，
 # 再执行 `pip install -e ".[unified]"`；pip会复用已经安装的兼容版本。
 -e .[unified]

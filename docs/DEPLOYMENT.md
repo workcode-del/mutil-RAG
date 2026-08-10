@@ -2,14 +2,14 @@
 
 ## 1. 部署原则
 
-本项目的默认部署方式是：**一个Python 3.11虚拟环境、一个代码仓库、一个主配置文件**。
+本项目的默认部署方式是：**一个名为`paper-rag`的Python 3.11 Conda环境、一个代码仓库、一个主配置文件**。
 
-MinerU、PP-Chart2Table、Qwen3-VL Embedding/Reranker、PyG、Qdrant客户端、PCST、API和界面都安装在同一个虚拟环境中。模块仍然保持代码隔离，但不再要求切换parser/chart/graph/model等多个环境。
+MinerU、PP-Chart2Table、Qwen3-VL Embedding/Reranker、PyG、Qdrant客户端、PCST、API和界面都安装在同一个Conda环境中。模块仍然保持代码隔离，但不再要求切换parser/chart/graph/model等多个环境。
 
 默认在线模式把Embedding和Reranker直接加载到检索API进程。`configs/server.yaml`保留HTTP模式，仅用于显存不足、远程GPU或后期生产部署，不是论文原型的必需步骤。
 
 ```text
-同一个.venv
+同一个Conda环境：paper-rag
   ├─ MinerU/PyMuPDF：PDF解析
   ├─ PP-Chart2Table：折线图结构化
   ├─ Qwen3-VL：向量与重排
@@ -21,21 +21,21 @@ MinerU、PP-Chart2Table、Qwen3-VL Embedding/Reranker、PyG、Qdrant客户端、
 
 - Python：3.11；
 - GPU：CUDA环境优先，CPU只能用于接口和小数据检查；
-- Windows下如果`pcst-fast`或MinerU安装失败，使用WSL2 Ubuntu，但仍只创建一个虚拟环境；
+- Windows下如果`pcst-fast`或MinerU安装失败，使用WSL2 Ubuntu，但仍只创建一个`paper-rag` Conda环境；
 - 生成模型优先使用OpenAI-compatible外部API，避免同一张GPU再常驻一个生成模型。
 
 ## 3. 一次性安装
 
-PowerShell：
+在安装了Miniconda或Anaconda的PowerShell中：
 
 ```powershell
 cd "D:\GitHub project\mutil RAG"
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
+conda env create -f environment.yml
+conda activate paper-rag
 python -m pip install --upgrade pip setuptools wheel
 ```
 
-CUDA机器先按照[PyTorch官方安装说明](https://pytorch.org/get-started/locally/)在当前`.venv`安装匹配CUDA的PyTorch，然后安装统一依赖：
+CUDA机器先按照[PyTorch官方安装说明](https://pytorch.org/get-started/locally/)在当前`paper-rag`环境安装匹配CUDA的PyTorch，然后安装统一依赖：
 
 ```powershell
 pip install -e ".[unified]"
@@ -47,7 +47,7 @@ pip install -e ".[unified]"
 pip install -r requirements/all.txt
 ```
 
-Qwen3-VL Embedding与Reranker共用一个官方仓库，也安装到当前`.venv`：
+Qwen3-VL Embedding与Reranker共用一个官方仓库，也安装到当前`paper-rag`环境：
 
 ```powershell
 New-Item -ItemType Directory -Force third_party
@@ -55,7 +55,7 @@ git clone https://github.com/QwenLM/Qwen3-VL-Embedding.git third_party/Qwen3-VL-
 pip install -e third_party/Qwen3-VL-Embedding
 ```
 
-默认配置已经指向`third_party/Qwen3-VL-Embedding`，不需要再创建官方仓库自己的uv环境。
+默认配置已经指向`third_party/Qwen3-VL-Embedding`，不需要再创建官方仓库自己的uv或Conda环境。
 
 ## 4. 默认本地配置
 
@@ -86,7 +86,7 @@ vector_store:
 
 ## 5. 离线建库
 
-所有命令都在同一个已激活的`.venv`中执行。
+所有命令都在同一个已激活的`paper-rag` Conda环境中执行。每次打开新终端只需先运行`conda activate paper-rag`。
 
 ### 5.1 PDF解析
 
@@ -166,7 +166,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/query `
 
 ## 7. 显存不足时的可选方式
 
-“单环境”和“单进程”不是同一件事。如果两套2B模型无法同时进入显存，可以仍然只维护这一个`.venv`，但在同一环境启动Embedding、Reranker和检索三个进程，并使用`configs/server.yaml`。
+“单环境”和“单进程”不是同一件事。如果两套2B模型无法同时进入显存，可以仍然只维护这一个`paper-rag` Conda环境，但在同一环境启动Embedding、Reranker和检索三个进程，并使用`configs/server.yaml`。
 
 这种方式不复制代码、不创建新环境，只隔离模型进程：
 

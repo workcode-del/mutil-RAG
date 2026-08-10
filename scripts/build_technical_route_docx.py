@@ -349,7 +349,7 @@ def build_document():
     implementation.style = "Table Grid"
     implementation_rows = [
         ("数据与解析", "MMDocRAG、Chart-MRAG Bench、PeerQA与SPIQA用于公开验证；私有材料论文集验证跨论文列表题。"),
-        ("部署方式", "默认使用一个Python 3.11环境统一运行MinerU、图表解析、Qwen3-VL检索和HGT/PCST；低显存时仅拆分同环境进程。生成器可调用外部API，向量维度为2048。"),
+        ("部署方式", "默认使用一个名为paper-rag的Python 3.11 Conda环境统一运行MinerU、图表解析、Qwen3-VL检索和HGT/PCST；低显存时仅拆分同环境进程。生成器可调用外部API，向量维度为2048。"),
         ("核心对照", "Qwen3-VL flat、VL-Reranker、LILaC简化基线、无/有关系监督HGT；top-k、PPR、PCST、EC-BFR。"),
         ("评价指标", "Sentence/Figure/Joint Recall、Evidence F1、Closure Validity、Slot Coverage、预算违反率、Citation Precision及质量-预算曲线。"),
     ]

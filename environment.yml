@@ -9,5 +9,6 @@ dependencies:
   - wheel
 
 # 创建环境后，在仓库根目录执行：
-#   conda activate paper-rag
+#   conda env create --name rag-thesis --file environment.yml
+#   conda activate rag-thesis
 #   bash scripts/install_locked.sh

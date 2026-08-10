@@ -1,12 +1,12 @@
 $ErrorActionPreference = "Stop"
 
 if (-not $env:CONDA_PREFIX) {
-    throw "请先执行 conda activate paper-rag。"
+    throw "未检测到已激活的Conda环境，请先执行 conda activate <环境名>。"
 }
 
-$activeEnvironment = Split-Path -Leaf $env:CONDA_PREFIX
-if ($activeEnvironment -ne "paper-rag") {
-    throw "当前激活的是 '$activeEnvironment'，请先执行 conda activate paper-rag。"
+$activeEnvironment = if ($env:CONDA_DEFAULT_ENV) { $env:CONDA_DEFAULT_ENV } else { Split-Path -Leaf $env:CONDA_PREFIX }
+if ($activeEnvironment -eq "base") {
+    throw "请先激活项目专用Conda环境，不要把依赖安装到base环境。"
 }
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -45,4 +45,4 @@ if (Test-Path $qwenRepo) {
 }
 
 python -m pip check
-Write-Host "paper-rag固定依赖安装完成。"
+Write-Host "Conda环境 '$activeEnvironment' 的固定依赖安装完成。"

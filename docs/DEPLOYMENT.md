@@ -2,14 +2,14 @@
 
 ## 1. 部署原则
 
-本项目的默认部署方式是：**一个名为`paper-rag`的Python 3.11 Conda环境、一个代码仓库、一个主配置文件**。
+本项目的默认部署方式是：**一个名称可自定义的Python 3.11 Conda环境、一个代码仓库、一个主配置文件**。`paper-rag`和`paper-rag-serve`是安装后的命令名，与Conda环境名称无关。
 
 MinerU、PP-Chart2Table、Qwen3-VL Embedding/Reranker、PyG、Qdrant客户端、PCST、API和界面都安装在同一个Conda环境中。模块仍然保持代码隔离，但不再要求切换parser/chart/graph/model等多个环境。
 
 默认在线模式把Embedding和Reranker直接加载到检索API进程。`configs/server.yaml`保留HTTP模式，仅用于显存不足、远程GPU或后期生产部署，不是论文原型的必需步骤。
 
 ```text
-同一个Conda环境：paper-rag
+同一个Conda环境：名称自定义（示例：rag-thesis）
   ├─ MinerU/PyMuPDF：PDF解析
   ├─ PP-Chart2Table：折线图结构化
   ├─ Qwen3-VL：向量与重排
@@ -37,11 +37,11 @@ sudo apt-get install -y build-essential git curl libgl1 libglib2.0-0 libgomp1 fo
 
 ```bash
 cd /path/to/mutil-RAG
-conda env create -f environment.yml
-conda activate paper-rag
+conda env create --name rag-thesis --file environment.yml
+conda activate rag-thesis
 ```
 
-`environment.yml`使用清华大学`conda-forge`镜像；配置脚本通过`pip config --site`把清华PyPI地址写入当前`paper-rag`环境，不修改用户级或系统级配置：
+示例中的`rag-thesis`可以替换为任意合法环境名。`environment.yml`保留`paper-rag`作为未传`--name`时的默认值；命令行的`--name`会覆盖它。该文件使用清华大学`conda-forge`镜像；配置脚本通过`pip config --site`把清华PyPI地址写入当前激活环境，不修改用户级或系统级配置：
 
 ```text
 Conda: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge
@@ -169,7 +169,7 @@ chart:
 
 ## 5. 离线建库
 
-所有命令都在同一个已激活的`paper-rag` Conda环境中执行。每次打开新终端只需先运行`conda activate paper-rag`。
+所有命令都在同一个已激活的项目Conda环境中执行。若采用上面的示例名称，每次打开新终端先运行`conda activate rag-thesis`。
 
 ### 5.1 PDF解析
 
@@ -248,7 +248,7 @@ curl -X POST http://127.0.0.1:8000/query \
 
 ## 7. 显存不足时的可选方式
 
-“单环境”和“单进程”不是同一件事。如果两套2B模型无法同时进入显存，可以仍然只维护这一个`paper-rag` Conda环境，但在同一环境启动Embedding、Reranker和检索三个进程，并使用`configs/server.yaml`。
+“单环境”和“单进程”不是同一件事。如果两套2B模型无法同时进入显存，可以仍然只维护当前项目Conda环境，但在同一环境启动Embedding、Reranker和检索三个进程，并使用`configs/server.yaml`。
 
 这种方式不复制代码、不创建新环境，只隔离模型进程：
 

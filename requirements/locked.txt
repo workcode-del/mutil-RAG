@@ -1,4 +1,4 @@
-# Python 3.11 / paper-rag direct dependency lock
+# Python 3.11 project direct dependency lock (Conda environment name is configurable)
 # Updated: 2026-08-10
 #
 # PyTorch and torchvision are intentionally separated into requirements/torch.txt.

@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${CONDA_DEFAULT_ENV:-}" != "paper-rag" ]]; then
-  echo "请先执行 conda activate paper-rag。" >&2
+if [[ -z "${CONDA_PREFIX:-}" ]]; then
+  echo "未检测到已激活的Conda环境，请先执行 conda activate <环境名>。" >&2
   exit 1
 fi
+
+if [[ "${CONDA_DEFAULT_ENV:-}" == "base" ]]; then
+  echo "请先激活项目专用Conda环境，不要把依赖安装到base环境。" >&2
+  exit 1
+fi
+
+active_environment="${CONDA_DEFAULT_ENV:-$(basename "$CONDA_PREFIX")}"
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
@@ -40,4 +47,4 @@ else
 fi
 
 python -m pip check
-echo "paper-rag固定依赖安装完成。"
+echo "Conda环境 '${active_environment}' 的固定依赖安装完成。"

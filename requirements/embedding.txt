@@ -1,5 +1,5 @@
-# Install the official Qwen3-VL-Embedding repository with `uv sync` first.
-# Its current tested floor is Python 3.11, torch 2.8 and transformers 4.57.3.
+# 可选的检索模型最小依赖。主部署请使用 requirements/all.txt 单环境安装。
+# 官方仓库安装到同一个环境，不再要求单独创建uv环境。
 transformers>=4.57.3,<6
 accelerate>=1.12,<2
 qwen-vl-utils>=0.0.14

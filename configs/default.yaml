@@ -2,6 +2,12 @@ project:
   data_dir: data
   artifacts_dir: outputs
 
+# 默认单环境、本进程运行。HTTP模式只用于显存隔离或远程部署。
+runtime:
+  mode: local
+  device: cuda
+  qwen3_vl_retrieval_repo: third_party/Qwen3-VL-Embedding
+
 parsing:
   backend: mineru
   sentence_locator: pymupdf
@@ -20,7 +26,6 @@ chart:
 
 embedding:
   backend: qwen3_vl
-  service_url: http://127.0.0.1:8101
   model: Qwen/Qwen3-VL-Embedding-2B
   dimension: 2048
   normalize: true
@@ -43,7 +48,7 @@ graph_index:
 
 reranker:
   enabled: true
-  service_url: http://127.0.0.1:8102
+  backend: qwen3_vl
   model: Qwen/Qwen3-VL-Reranker-2B
   top_n: 100
 

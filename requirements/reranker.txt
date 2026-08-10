@@ -1,5 +1,5 @@
-# Qwen3-VL-Reranker shares the official retrieval repository with the embedder.
-# Run it separately so the two 2B models need not occupy one GPU together.
+# 可选的重排器最小依赖。主部署请使用 requirements/all.txt 单环境安装。
+# Embedding和Reranker默认在同一进程；HTTP拆分仅是低显存备选模式。
 transformers>=4.57.3,<6
 accelerate>=1.12,<2
 qwen-vl-utils>=0.0.14

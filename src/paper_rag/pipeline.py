@@ -41,6 +41,7 @@ class ScientificRAGPipeline:
         graph_scorer: GraphScoreFunction | None = None,
         reranker: Reranker | None = None,
         generator: AnswerGenerator | None = None,
+        default_per_type_top_k: int = 25,
     ) -> None:
         self.graph = graph
         self.embedder = embedder
@@ -49,13 +50,15 @@ class ScientificRAGPipeline:
         self.graph_scorer = graph_scorer
         self.reranker = reranker
         self.generator = generator
+        self.default_per_type_top_k = default_per_type_top_k
 
-    def run(self, query: QuerySpec, per_type_top_k: int = 25) -> PipelineResult:
+    def run(self, query: QuerySpec, per_type_top_k: int | None = None) -> PipelineResult:
+        effective_top_k = per_type_top_k or self.default_per_type_top_k
         query_vector = self.embedder.embed_queries([query.query])[0]
         hits = self.vector_store.search(
             query_vector,
             [NodeType.SENTENCE, NodeType.FIGURE, NodeType.CAPTION, NodeType.CHART_DATA],
-            per_type_top_k,
+            effective_top_k,
         )
         if self.graph_scorer:
             graph_scores = self.graph_scorer(query_vector, hits)

@@ -63,8 +63,11 @@ def main() -> None:
     relation_triples = build_relation_triples(graph, ids_by_type, positions, args.seed)
     query_samples = read_query_samples(args.query_samples)
     query_embeddings = load_npz(args.query_embeddings) if args.query_embeddings else {}
-    if not relation_triples and not query_samples:
-        raise ValueError("No relation triples or query ranking samples are available")
+    if not args.query_samples or not args.query_embeddings or not query_samples:
+        raise ValueError(
+            "Deployed SRMG artifacts require both non-empty --query-samples and "
+            "--query-embeddings so the online query projector is trained"
+        )
 
     for epoch in range(args.epochs):
         model.train()

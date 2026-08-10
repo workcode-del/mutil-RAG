@@ -20,7 +20,7 @@ class ECBFRConfig:
     slot_weight: float = 0.4
     entity_weight: float = 0.3
     redundancy_weight: float = 0.2
-    relation_costs: dict = field(default_factory=lambda: dict(DEFAULT_RELATION_COSTS))
+    relation_costs: dict | None = field(default_factory=lambda: dict(DEFAULT_RELATION_COSTS))
 
 
 class EvidenceClosureBudgetedForestRetriever:
@@ -58,7 +58,7 @@ class EvidenceClosureBudgetedForestRetriever:
                 skeleton = solve_pcst(
                     paper_graph,
                     paper_prizes,
-                    self.config.relation_costs,
+                    self.config.relation_costs or DEFAULT_RELATION_COSTS,
                     cost_scale=scale,
                 )
                 if not skeleton.node_ids:

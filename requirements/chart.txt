@@ -1,5 +1,5 @@
-# PP-Chart2Table entered Transformers in 2026; keep it isolated from parser/graph envs.
-# Install the CUDA-matching torch wheel separately.
+# 可选的图表模块最小依赖。主部署请使用 requirements/all.txt 单环境安装。
+# 如需CUDA，请先安装匹配CUDA版本的torch wheel。
 transformers>=5.14,<6
 accelerate>=1.12,<2
 Pillow>=10,<13

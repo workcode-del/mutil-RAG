@@ -1,184 +1,191 @@
-# 运行、部署与迁移文档
+# 单环境部署与运行
 
-当前设备只能看代码时无需执行本文件。正式运行推荐Windows主机+WSL2 Ubuntu 24.04+NVIDIA GPU。先用10篇PDF完成验收，再扩大数据集。
+## 1. 部署原则
 
-## 1. 重要迁移说明
+本项目的默认部署方式是：**一个Python 3.11虚拟环境、一个代码仓库、一个主配置文件**。
 
-旧版GME向量为1536维，新版Qwen3-VL-Embedding-2B默认为2048维，不能在同一Qdrant collection中混用。升级时必须：
+MinerU、PP-Chart2Table、Qwen3-VL Embedding/Reranker、PyG、Qdrant客户端、PCST、API和界面都安装在同一个虚拟环境中。模块仍然保持代码隔离，但不再要求切换parser/chart/graph/model等多个环境。
 
-1. 保留原始解析JSON和图片；
-2. 新建或清空目标Qdrant collection；
-3. 使用Qwen3-VL重新生成全部节点向量；
-4. 重新训练HGT并导出2048→256维查询投影头；
-5. 不复用旧`graph_embeddings.npy`或`query_projector.pt`。
+默认在线模式把Embedding和Reranker直接加载到检索API进程。`configs/server.yaml`保留HTTP模式，仅用于显存不足、远程GPU或后期生产部署，不是论文原型的必需步骤。
 
-## 2. 前置条件
-
-- Python 3.11或3.12；
-- Git、Docker Desktop、WSL2；
-- NVIDIA驱动与WSL CUDA；
-- `uv`或conda；
-- 建议至少16GB内存；模型服务显存以目标机器smoke test为准；
-- Qwen3-VL Embedding和Reranker均为2B，显存不足时顺序启动并离线缓存，不要求同时常驻。
-
-## 3. 主项目环境
-
-```bash
-cd "/mnt/d/GitHub project/mutil RAG"
-python -m venv .venv-graph
-source .venv-graph/bin/activate
-pip install -e ".[dev,api,app,vector,graph]"
+```text
+同一个.venv
+  ├─ MinerU/PyMuPDF：PDF解析
+  ├─ PP-Chart2Table：折线图结构化
+  ├─ Qwen3-VL：向量与重排
+  ├─ PyG/PCST/Qdrant：图索引与EC-BFR
+  └─ FastAPI/Streamlit：系统接口与界面
 ```
 
-PyG和CUDA版本必须按[PyTorch Geometric安装说明](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html)选择对应wheel。Windows上`pcst_fast`编译失败时使用WSL；fallback仅用于界面演示，正式PCST实验必须记录真实求解器后端。
+## 2. 平台建议
 
-## 4. PDF解析环境
+- Python：3.11；
+- GPU：CUDA环境优先，CPU只能用于接口和小数据检查；
+- Windows下如果`pcst-fast`或MinerU安装失败，使用WSL2 Ubuntu，但仍只创建一个虚拟环境；
+- 生成模型优先使用OpenAI-compatible外部API，避免同一张GPU再常驻一个生成模型。
 
-```bash
-python -m venv .venv-parser
-source .venv-parser/bin/activate
-pip install -r requirements/parser.txt
-pip install -e .
+## 3. 一次性安装
+
+PowerShell：
+
+```powershell
+cd "D:\GitHub project\mutil RAG"
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools wheel
 ```
 
-按照[MinerU官方代码](https://github.com/opendatalab/MinerU)下载模型并解析PDF。论文依据更新为[MinerU2.5](https://arxiv.org/abs/2509.22186)，适配层读取MinerU输出JSON：
+CUDA机器先按照[PyTorch官方安装说明](https://pytorch.org/get-started/locally/)在当前`.venv`安装匹配CUDA的PyTorch，然后安装统一依赖：
 
-```bash
-paper-rag parse-mineru data/parsed/paper1_content_list.json \
+```powershell
+pip install -e ".[unified]"
+```
+
+也可以使用等价入口：
+
+```powershell
+pip install -r requirements/all.txt
+```
+
+Qwen3-VL Embedding与Reranker共用一个官方仓库，也安装到当前`.venv`：
+
+```powershell
+New-Item -ItemType Directory -Force third_party
+git clone https://github.com/QwenLM/Qwen3-VL-Embedding.git third_party/Qwen3-VL-Embedding
+pip install -e third_party/Qwen3-VL-Embedding
+```
+
+默认配置已经指向`third_party/Qwen3-VL-Embedding`，不需要再创建官方仓库自己的uv环境。
+
+## 4. 默认本地配置
+
+`configs/default.yaml`的关键配置为：
+
+```yaml
+runtime:
+  mode: local
+  device: cuda
+  qwen3_vl_retrieval_repo: third_party/Qwen3-VL-Embedding
+
+embedding:
+  backend: qwen3_vl
+  model: Qwen/Qwen3-VL-Embedding-2B
+  dimension: 2048
+
+reranker:
+  enabled: true
+  backend: qwen3_vl
+  model: Qwen/Qwen3-VL-Reranker-2B
+
+vector_store:
+  mode: local
+  path: data/index/qdrant
+```
+
+该模式不要求启动8101、8102或Qdrant Docker服务。
+
+## 5. 离线建库
+
+所有命令都在同一个已激活的`.venv`中执行。
+
+### 5.1 PDF解析
+
+按照[MinerU官方代码](https://github.com/opendatalab/MinerU)解析PDF，得到`content_list.json`和图片目录。随后规范化为证据图：
+
+```powershell
+paper-rag parse-mineru data/parsed/paper1_content_list.json `
   data/parsed/paper1_graph.json --paper-id paper1
 paper-rag inspect-graph data/parsed/paper1_graph.json
 ```
 
-每篇论文检查句子bbox、Figure图片、Caption和引用句。只有折线图进入ChartData解析。
+多篇论文图合并：
 
-## 5. Qwen3-VL检索模型环境
-
-官方实现：[Qwen3-VL-Embedding代码](https://github.com/QwenLM/Qwen3-VL-Embedding)。本项目不复制其源码，服务通过环境变量定位官方仓库。
-
-```bash
-mkdir -p third_party
-git clone https://github.com/QwenLM/Qwen3-VL-Embedding.git third_party/Qwen3-VL-Embedding
-cd third_party/Qwen3-VL-Embedding
-uv sync
-source .venv/bin/activate
-uv pip install -e "/mnt/d/GitHub project/mutil RAG"
-
-export QWEN3_VL_RETRIEVAL_REPO="$PWD"
-export EMBEDDING_MODEL="Qwen/Qwen3-VL-Embedding-2B"
-export EMBEDDING_DIMENSION=2048
-export EMBEDDING_DEVICE=cuda
-uvicorn services.embedding_api:app --app-dir "/mnt/d/GitHub project/mutil RAG" \
-  --host 127.0.0.1 --port 8101
+```powershell
+paper-rag merge-graphs data/parsed/evidence_graph.json `
+  data/parsed/paper1_graph.json data/parsed/paper2_graph.json
 ```
 
-健康检查：
+当前折线图模块与句级bbox回填仍需进一步接入该建库命令；在接通前不能把`ChartData`和句级定位当作已完成的部署能力。
 
-```bash
-curl http://127.0.0.1:8101/health
-```
+### 5.2 建立Qdrant索引
 
-另一个进程启动多模态重排器：
+脚本会在当前进程直接加载Qwen3-VL Embedding，不再依赖Embedding HTTP服务：
 
-```bash
-export QWEN3_VL_RETRIEVAL_REPO="/absolute/path/to/third_party/Qwen3-VL-Embedding"
-export RERANKER_MODEL="Qwen/Qwen3-VL-Reranker-2B"
-export RERANKER_DEVICE=cuda
-uvicorn services.reranker_api:app --app-dir "/mnt/d/GitHub project/mutil RAG" \
-  --host 127.0.0.1 --port 8102
-```
-
-官方仓库也支持vLLM>=0.14.0；首版建议先用Transformers适配器，减少服务层变量。
-
-## 6. 折线图解析环境
-
-```bash
-python -m venv .venv-chart
-source .venv-chart/bin/activate
-pip install -r requirements/chart.txt
-pip install -e .
-```
-
-主后端为`PaddlePaddle/PP-Chart2Table_safetensors`，调用代码位于`src/paper_rag/chart/pp_chart2table.py`。自集成包装器默认重复3次，数值取中位数并输出不确定性。若本机无法运行该模型，可将Qwen3-VL或外部多模态API包装为同一`extract(image_path)`接口；DePlot仅用于对比实验。
-
-## 7. Qdrant与索引构建
-
-本地原型可用Qdrant Local；服务模式：
-
-```bash
-docker compose -f deploy/docker-compose.yml up -d qdrant
-```
-
-在Embedding服务健康后建立2048维索引：
-
-```bash
+```powershell
 paper-rag validate-config configs/default.yaml
-python scripts/index_graph.py data/parsed/evidence_graph.json \
-  --config configs/default.yaml --embedding-cache outputs/base_embeddings.npz
+python scripts/index_graph.py data/parsed/evidence_graph.json `
+  --config configs/default.yaml `
+  --embedding-cache outputs/base_embeddings.npz
 ```
 
-不要把旧1536维collection改名后继续使用；必须重新向量化。
+Qwen3-VL使用2048维向量。旧的1536维索引不能复用。
 
-## 8. 训练轻量结构适配器
+### 5.3 训练HGT
 
-```bash
-source .venv-graph/bin/activate
-python scripts/train_srmg.py \
-  data/parsed/evidence_graph.json outputs/base_embeddings.npz \
-  --query-samples data/train/query_pairs.jsonl \
-  --query-embeddings outputs/query_embeddings.npz \
+```powershell
+python scripts/train_srmg.py `
+  data/parsed/evidence_graph.json outputs/base_embeddings.npz `
+  --query-samples data/train/query_pairs.jsonl `
+  --query-embeddings outputs/query_embeddings.npz `
   --output outputs/srmg_index --epochs 20 --device cuda
 ```
 
-训练脚本从NPZ自动推断输入维度。输出包括`graph_embeddings.npy`、`node_ids.json`和`query_projector.pt`。关系监督样本和query-evidence样本都没有时训练会拒绝启动，避免导出未训练索引。
+正式训练必须同时提供查询正负样本和查询Embedding，否则查询投影头没有有效监督。
 
-## 9. 回答生成服务
+## 6. 单命令启动在线系统
 
-采用[Qwen3-VL官方实现](https://github.com/QwenLM/Qwen3-VL)，推荐4B或8B；显存不足时使用2B或OpenAI-compatible外部API。配置默认为：
+设置证据图和HGT产物后，在同一个环境用统一入口启动一个API进程：
 
-```yaml
-generation:
-  provider: openai_compatible
-  base_url: http://127.0.0.1:8001/v1
-  model: Qwen/Qwen3-VL-4B-Instruct
+```powershell
+paper-rag-serve `
+  --graph data/parsed/evidence_graph.json `
+  --config configs/default.yaml `
+  --hgt-artifacts outputs/srmg_index `
+  --host 127.0.0.1 --port 8000
 ```
 
-外部服务需支持图片URL或base64。当前生成器会保留image_path，部署适配层必须将本地路径转换为服务可访问的载荷，不能假装已经上传。
+该进程会依次加载：本地证据图、本地Qdrant、Qwen3-VL Embedding、HGT缓存和Qwen3-VL Reranker。
 
-## 10. 启动检索API与界面
+需要生成答案时增加`--enable-generator`；仅做召回消融时可增加`--disable-reranker`。
 
-```bash
-export PAPER_RAG_GRAPH=data/parsed/evidence_graph.json
-export PAPER_RAG_CONFIG=configs/server.yaml
-export PAPER_RAG_HGT_ARTIFACTS=outputs/srmg_index
-export PAPER_RAG_ENABLE_RERANKER=1
-export PAPER_RAG_ENABLE_GENERATOR=0
-uvicorn services.retrieval_api:app --host 0.0.0.0 --port 8000
+健康检查与查询：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health
+
+$body = @{
+  query = "达到500 MPa强度的材料有哪些？"
+  metric = "strength"
+  value = 500
+  unit = "MPa"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/query `
+  -ContentType "application/json" -Body $body
 ```
 
-生成服务验证后把`PAPER_RAG_ENABLE_GENERATOR`改为1。启动界面：
+## 7. 显存不足时的可选方式
 
-```bash
-streamlit run app/streamlit_app.py --server.port 8501
+“单环境”和“单进程”不是同一件事。如果两套2B模型无法同时进入显存，可以仍然只维护这一个`.venv`，但在同一环境启动Embedding、Reranker和检索三个进程，并使用`configs/server.yaml`。
+
+这种方式不复制代码、不创建新环境，只隔离模型进程：
+
+```powershell
+python -m uvicorn services.embedding_api:app --port 8101
+python -m uvicorn services.reranker_api:app --port 8102
+python -m uvicorn services.retrieval_api:app --port 8000
 ```
 
-## 11. 无模型静态检查
+## 8. 静态验收门
 
-```bash
-pip install -e ".[dev]"
-paper-rag validate-config configs/default.yaml
-pytest
-python -m compileall -q src services scripts app tests
-```
+当前设备不能运行模型时，至少检查：
 
-这些检查验证接口、schema、闭包、预算和Python语法，不代表GPU模型已经运行。
+1. `configs/default.yaml`为本地backend；
+2. Embedding/Qdrant/HGT输入均为2048维，HGT输出为256维；
+3. 图中node_id唯一，边的端点都存在；
+4. HGT训练提供query samples和query embeddings；
+5. PCST正式实验记录`pcst_fast`后端，而不是fallback；
+6. 闭包后森林成本不超过预算；
+7. 生成器引用ID必须属于当前证据森林。
 
-## 12. 十篇论文验收门
-
-1. Gate A：抽查30个句子bbox和20组Figure-Caption-Mention；
-2. Gate B：Embedding/Qdrant均为2048维，HGT输入2048维、输出256维且无NaN；
-3. Gate C：原图能进入VL-Reranker，而非只输入caption；
-4. Gate D：图表自集成结果保存extractor、confidence、uncertainty和原图来源；
-5. Gate E：闭包幂等，所有森林严格不超预算；
-6. Gate F：20个问题返回evidence_id、页码、原句/原图，生成引用不越界。
-
-六项全部通过后再冻结环境、记录GPU与峰值显存，并开展公开集和私有集实验。
+这些检查只能验证代码契约，不等同于GPU模型已经成功运行。

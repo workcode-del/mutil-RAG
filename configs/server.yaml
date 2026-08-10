@@ -19,6 +19,7 @@ graph_index:
 
 reranker:
   enabled: true
+  backend: http
   service_url: http://127.0.0.1:8102
 
 retrieval:

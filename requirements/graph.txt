@@ -1,4 +1,4 @@
-# Install CUDA-matching torch and PyG wheels as documented before this file.
+# 可选的图检索最小依赖。主部署请使用 requirements/all.txt 单环境安装。
 numpy>=1.26,<3
 networkx>=3.4,<4
 qdrant-client>=1.18,<2

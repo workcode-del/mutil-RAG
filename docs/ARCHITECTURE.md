@@ -11,7 +11,7 @@
 | graph | PyG、Qdrant、pcst_fast | 证据图、缓存向量、query | 候选节点、闭包证据森林 |
 | generation | Qwen3-VL兼容API | 证据森林与图片 | 带合法evidence_id的回答 |
 
-模型服务和图检索进程以HTTP隔离。这样可以分别控制显存，也避免MinerU、Transformers、PyG和图表模型的依赖冲突。
+默认部署在同一个Python 3.11虚拟环境中，Embedding、Reranker和图检索由一个API进程直接组装，便于论文阶段统一修改和调试。模块接口仍然保留HTTP实现；只有显存不足、使用远程GPU或后期生产部署时，才在同一环境中把模型拆成多个进程。
 
 ## 2. 数据图谱
 

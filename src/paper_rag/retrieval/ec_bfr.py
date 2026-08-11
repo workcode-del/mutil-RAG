@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass, field
 
 from paper_rag.domain import EvidenceForest, EvidenceTree, QuerySpec, SearchHit
 from paper_rag.evidence_graph import EvidenceGraph
-from paper_rag.retrieval.closure import ClosurePolicy, evidence_closure
+from paper_rag.retrieval.closure import ClosurePolicy
 from paper_rag.retrieval.cost import CostModel
-from paper_rag.retrieval.pcst import DEFAULT_RELATION_COSTS, solve_pcst
+from paper_rag.retrieval.pcst import DEFAULT_RELATION_COSTS
+from paper_rag.retrieval.pcst_candidates import build_pcst_candidates
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,52 +37,18 @@ class EvidenceClosureBudgetedForestRetriever:
         self.policy = closure_policy
         self.cost_model = CostModel(config.image_unit)
 
-    def retrieve(self, query: QuerySpec, hits: list[SearchHit]) -> EvidenceForest:
-        prizes = {hit.node_id: max(0.0, hit.score) for hit in hits}
-        seeds_by_paper: dict[str, set[str]] = defaultdict(set)
-        for hit in hits:
-            if hit.node_id in self.graph.nodes:
-                seeds_by_paper[hit.paper_id].add(hit.node_id)
+    def rank_hits(self, query: QuerySpec, hits: list[SearchHit]) -> list[SearchHit]:
+        return hits
 
-        candidates: list[EvidenceTree] = []
-        seen_closed_sets: set[frozenset[str]] = set()
-        for paper_id, seed_ids in seeds_by_paper.items():
-            expanded = self.graph.expand(
-                seed_ids,
-                hops=self.config.candidate_hops,
-                min_confidence=self.config.min_edge_confidence,
-            )
-            paper_graph = self.graph.paper_subgraph(paper_id, expanded)
-            paper_prizes = {node_id: prizes.get(node_id, 0.0) for node_id in paper_graph.nodes}
-            for scale in self.config.lambda_values:
-                skeleton = solve_pcst(
-                    paper_graph,
-                    paper_prizes,
-                    self.config.relation_costs or DEFAULT_RELATION_COSTS,
-                    cost_scale=scale,
-                )
-                if not skeleton.node_ids:
-                    continue
-                closed = evidence_closure(self.graph, skeleton.node_ids, self.policy)
-                identity = frozenset(closed)
-                if identity in seen_closed_sets:
-                    continue
-                seen_closed_sets.add(identity)
-                cost = self.cost_model.set_cost(self.graph, closed)
-                if cost > self.config.budget:
-                    continue
-                candidates.append(
-                    EvidenceTree(
-                        paper_id=paper_id,
-                        node_ids=closed,
-                        edge_ids=skeleton.edge_pairs,
-                        relevance=sum(prizes.get(node_id, 0.0) for node_id in closed),
-                        covered_slots=self._covered_slots(query, closed),
-                        entities=self._entities(closed),
-                        cost=cost,
-                        metadata={"skeleton_backend": skeleton.backend, "lambda": scale},
-                    )
-                )
+    def retrieve(self, query: QuerySpec, hits: list[SearchHit]) -> EvidenceForest:
+        candidates = build_pcst_candidates(
+            self.graph,
+            query,
+            hits,
+            self.config,
+            closure_policy=self.policy,
+            max_cost=self.config.budget,
+        )
         return self._select_forest(query, candidates)
 
     def _select_forest(
@@ -127,21 +93,3 @@ class EvidenceClosureBudgetedForestRetriever:
         forest = EvidenceForest(selected, total_cost, self.config.budget)
         forest.validate_budget()
         return forest
-
-    def _covered_slots(self, query: QuerySpec, node_ids: set[str]) -> set[str]:
-        text = " ".join(self.graph.nodes[node_id].searchable_text.lower() for node_id in node_ids)
-        covered = {"answer"} if text.strip() else set()
-        for slot in query.required_slots - {"answer"}:
-            value = getattr(query, slot, None)
-            if value is not None and str(value).lower() in text:
-                covered.add(slot)
-        if query.conditions and any(condition.lower() in text for condition in query.conditions):
-            covered.add("conditions")
-        return covered
-
-    def _entities(self, node_ids: set[str]) -> set[str]:
-        entities: set[str] = set()
-        for node_id in node_ids:
-            values = self.graph.nodes[node_id].attributes.get("entities", [])
-            entities.update(str(value) for value in values)
-        return entities

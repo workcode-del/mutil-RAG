@@ -11,12 +11,18 @@ from paper_rag.embedding.base import Embedder
 from paper_rag.evidence_graph import EvidenceGraph
 from paper_rag.generation.base import Answer, AnswerGenerator
 from paper_rag.reranking.base import Reranker
-from paper_rag.retrieval.ec_bfr import EvidenceClosureBudgetedForestRetriever
+from paper_rag.retrieval.base import EvidenceRetriever
 
 
 class VectorStore(Protocol):
     def search(
-        self, query_vector: np.ndarray, node_types: list[NodeType], per_type_top_k: int
+        self,
+        query: str,
+        query_vector: np.ndarray | None,
+        node_types: list[NodeType],
+        per_type_top_k: int,
+        paper_ids: set[str] | None = None,
+        candidate_node_ids: set[str] | None = None,
     ) -> list[SearchHit]: ...
 
 
@@ -35,9 +41,9 @@ class ScientificRAGPipeline:
     def __init__(
         self,
         graph: EvidenceGraph,
-        embedder: Embedder,
+        embedder: Embedder | None,
         vector_store: VectorStore,
-        forest_retriever: EvidenceClosureBudgetedForestRetriever,
+        forest_retriever: EvidenceRetriever,
         graph_scorer: GraphScoreFunction | None = None,
         reranker: Reranker | None = None,
         generator: AnswerGenerator | None = None,
@@ -52,15 +58,26 @@ class ScientificRAGPipeline:
         self.generator = generator
         self.default_per_type_top_k = default_per_type_top_k
 
-    def run(self, query: QuerySpec, per_type_top_k: int | None = None) -> PipelineResult:
+    def run(
+        self,
+        query: QuerySpec,
+        per_type_top_k: int | None = None,
+        paper_ids: set[str] | None = None,
+        candidate_node_ids: set[str] | None = None,
+    ) -> PipelineResult:
         effective_top_k = per_type_top_k or self.default_per_type_top_k
-        query_vector = self.embedder.embed_queries([query.query])[0]
+        query_vector = self.embedder.embed_queries([query.query])[0] if self.embedder else None
         hits = self.vector_store.search(
+            query.query,
             query_vector,
             [NodeType.SENTENCE, NodeType.FIGURE, NodeType.CAPTION, NodeType.CHART_DATA],
             effective_top_k,
+            paper_ids,
+            candidate_node_ids,
         )
         if self.graph_scorer:
+            if query_vector is None:
+                raise ValueError("HGT scoring requires a query embedder")
             graph_scores = self.graph_scorer(query_vector, hits)
             for hit in hits:
                 hit.score_components["hgt"] = graph_scores.get(hit.node_id, 0.0)
@@ -89,6 +106,7 @@ class ScientificRAGPipeline:
                 1.0 / (60 + rank_positions[scorer][hit.node_id]) for scorer in scorer_names
             )
         hits.sort(key=lambda hit: hit.score, reverse=True)
+        hits = self.forest_retriever.rank_hits(query, hits)
 
         forest = self.forest_retriever.retrieve(query, hits)
         answer = self.generator.generate(query, forest, self.graph) if self.generator else None

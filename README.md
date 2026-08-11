@@ -51,6 +51,7 @@ flowchart LR
 | `src/paper_rag/reranking` | Qwen3-VL原图/文本混合重排与HTTP客户端 |
 | `src/paper_rag/retrieval` | RRF、PCST、类型闭包和EC-BFR |
 | `src/paper_rag/generation` | 证据序列化、Qwen3-VL兼容API和引用ID校验 |
+| `src/paper_rag/benchmarking` | PeerQA/MMDocRAG批量下载、转换、索引与对比实验 |
 | `services` | Embedding、Reranker和主检索HTTP服务 |
 | `tests` | 不下载模型即可运行的算法与接口测试 |
 
@@ -59,3 +60,16 @@ flowchart LR
 部署目标为Linux x86-64（推荐Ubuntu 22.04/24.04）。系统在一个名称可自定义的Python 3.11 Conda环境中完成解析、图表处理、向量化、HGT训练、检索和启动；`paper-rag`只是安装后的命令名，不限制Conda环境名。Conda与PyPI软件包默认通过清华镜像下载，且配置只写入当前激活环境。直接依赖已固定在`requirements/locked.txt`，PyTorch固定版本单独列在`requirements/torch.txt`，Linux统一安装入口为`bash scripts/install_locked.sh`，按顺序执行以减少pip回溯。模型权重优先读取配置的本地目录，不存在时从ModelScope下载并缓存到`data/models`。Embedding与Reranker默认在检索进程内加载，HTTP拆分只是低显存备选方案。统一安装、模型预下载、索引重建、单命令启动和验收门见 [部署文档](docs/DEPLOYMENT.md)。模块输入输出见 [系统架构](docs/ARCHITECTURE.md)，完整论文选型见 [论文依据与最终算法选型](论文依据与最终算法选型.md)。
 
 本仓库不复制 MinerU、Qwen、PP-Chart2Table、PyG 或 pcst_fast 的源码，只提供适配层；第三方组件保留各自许可证。2026年的部分工作仍为预印本，论文中应如实标注发表状态。
+
+## 公开数据集评测
+
+PeerQA 与 MMDocRAG 共用一个入口，以下命令会断点续传数据、批量转换、建立索引、运行对比系统并生成汇总表：
+
+```bash
+paper-rag benchmark all \
+  --datasets peerqa mmdocrag \
+  --root data/benchmarks \
+  --config configs/default.yaml
+```
+
+运行模式、数据目录、候选范围和指标定义见 [统一公开数据集评测](docs/BENCHMARKS.md)。

@@ -254,6 +254,9 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument("output", help="Output graph containing ChartData nodes")
     enrich.add_argument("--config", default="configs/default.yaml")
     enrich.set_defaults(handler=_enrich_charts)
+    from paper_rag.benchmarking.cli import add_benchmark_parser
+
+    add_benchmark_parser(commands)
     return parser
 
 

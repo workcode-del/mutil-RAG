@@ -65,21 +65,41 @@ class QdrantEvidenceStore:
 
     def search(
         self,
-        query_vector: np.ndarray,
+        query: str,
+        query_vector: np.ndarray | None,
         node_types: Iterable[NodeType],
         per_type_top_k: int = 25,
+        paper_ids: set[str] | None = None,
+        candidate_node_ids: set[str] | None = None,
     ) -> list[SearchHit]:
+        if query_vector is None:
+            raise ValueError("Qdrant search requires a query vector")
         vector = np.asarray(query_vector, dtype=np.float32).reshape(-1)
         if vector.shape[0] != self.dimension:
             raise ValueError(f"Query dimension must be {self.dimension}")
         hits: list[SearchHit] = []
         for node_type in node_types:
-            query_filter = self.models.Filter(
-                must=[
+            conditions = [
+                self.models.FieldCondition(
+                    key="node_type", match=self.models.MatchValue(value=node_type.value)
+                )
+            ]
+            if paper_ids:
+                conditions.append(
                     self.models.FieldCondition(
-                        key="node_type", match=self.models.MatchValue(value=node_type.value)
+                        key="paper_id",
+                        match=self.models.MatchAny(any=sorted(paper_ids)),
                     )
-                ]
+                )
+            if candidate_node_ids:
+                conditions.append(
+                    self.models.FieldCondition(
+                        key="node_id",
+                        match=self.models.MatchAny(any=sorted(candidate_node_ids)),
+                    )
+                )
+            query_filter = self.models.Filter(
+                must=conditions
             )
             # query_points is the current client API; adapting future changes stays here.
             response = self.client.query_points(

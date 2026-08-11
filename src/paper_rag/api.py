@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Any
 
 from paper_rag.domain import QuerySpec
@@ -64,4 +62,3 @@ def create_app(pipeline: ScientificRAGPipeline | None = None):
 
 
 app = create_app()
-

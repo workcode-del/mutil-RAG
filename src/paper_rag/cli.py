@@ -14,8 +14,11 @@ from paper_rag.evidence_graph import (
     load_graph,
     save_graph,
 )
+from paper_rag.io import read_jsonl
 from paper_rag.model_source import resolve_model_reference
 from paper_rag.parsing import MinerUAdapter, locate_sentence_batch
+from paper_rag.training import build_query_pairs, embed_training_queries, train_hgt
+from paper_rag.workflow import build_corpus, index_graph
 
 
 def _parse_mineru(args: argparse.Namespace) -> int:
@@ -60,7 +63,8 @@ def _inspect_graph(args: argparse.Namespace) -> int:
     by_type: dict[str, int] = {}
     for node in graph.nodes.values():
         by_type[node.node_type.value] = by_type.get(node.node_type.value, 0) + 1
-    print(json.dumps({"nodes": len(graph.nodes), "edges": len(graph.edges), "by_type": by_type}, indent=2))
+    report = {"nodes": len(graph.nodes), "edges": len(graph.edges), "by_type": by_type}
+    print(json.dumps(report, indent=2))
     return 0
 
 
@@ -90,7 +94,9 @@ def _validate_config(args: argparse.Namespace) -> int:
     dimension = config.get("embedding", {}).get("dimension")
     hidden = config.get("graph_index", {}).get("hidden_dimension")
     if dimension != 2048 or hidden != 256:
-        raise ValueError("Reference architecture requires base dimension 2048 and graph dimension 256")
+        raise ValueError(
+            "Reference architecture requires base dimension 2048 and graph dimension 256"
+        )
     print(f"Configuration is structurally valid: {Path(args.config).resolve()}")
     return 0
 
@@ -132,14 +138,9 @@ def _download_models(args: argparse.Namespace) -> int:
     return 0
 
 
-def _read_jsonl(path: str | Path) -> list[dict]:
-    with Path(path).open("r", encoding="utf-8") as stream:
-        return [json.loads(line) for line in stream if line.strip()]
-
-
 def _enrich_charts(args: argparse.Namespace) -> int:
     graph = load_graph(args.graph)
-    entries = _read_jsonl(args.manifest)
+    entries = read_jsonl(args.manifest)
     config = load_yaml(args.config)
     chart_config = config.get("chart", {})
     extractor = None
@@ -208,6 +209,70 @@ def _enrich_charts(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_corpus(args: argparse.Namespace) -> int:
+    result = build_corpus(
+        args.pdf_dir,
+        graph_path=args.graph,
+        mineru_dir=args.mineru_output,
+        embedding_cache=args.embedding_cache,
+        config_path=args.config,
+        mineru_command=args.mineru_command,
+        force=args.force,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _index_graph(args: argparse.Namespace) -> int:
+    report = index_graph(args.graph, args.config, args.embedding_cache)
+    print(
+        json.dumps(
+            {
+                "text_nodes": report.text_nodes,
+                "figure_nodes": report.figure_nodes,
+                "dimension": report.dimension,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _train_index(args: argparse.Namespace) -> int:
+    root = Path(args.work_dir)
+    graph_config = load_yaml(args.config).get("graph_index", {})
+    pairs = build_query_pairs(
+        args.graph,
+        args.samples,
+        root / "query_pairs.jsonl",
+        embeddings_path=args.base_embeddings,
+        seed=args.seed,
+    )
+    queries = embed_training_queries(
+        pairs,
+        root / "query_embeddings.npz",
+        args.config,
+        batch_size=args.batch_size,
+    )
+    artifacts = train_hgt(
+        args.graph,
+        args.base_embeddings,
+        pairs,
+        queries,
+        args.output,
+        epochs=args.epochs,
+        learning_rate=args.learning_rate,
+        relation_weight=args.relation_weight,
+        seed=args.seed,
+        device=args.device,
+        hidden_dimension=int(graph_config.get("hidden_dimension", 256)),
+        layers=int(graph_config.get("layers", 2)),
+        heads=int(graph_config.get("heads", 4)),
+    )
+    print(json.dumps({"query_pairs": str(pairs), "artifacts": str(artifacts)}, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="paper-rag")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -254,6 +319,38 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument("output", help="Output graph containing ChartData nodes")
     enrich.add_argument("--config", default="configs/default.yaml")
     enrich.set_defaults(handler=_enrich_charts)
+    build = commands.add_parser(
+        "build-corpus", help="Batch parse PDFs, merge the graph, and build the vector index"
+    )
+    build.add_argument("pdf_dir")
+    build.add_argument("--graph", default="data/parsed/evidence_graph.json")
+    build.add_argument("--mineru-output", default="data/mineru")
+    build.add_argument("--embedding-cache", default="data/cache/base_embeddings.npz")
+    build.add_argument("--config", default="configs/default.yaml")
+    build.add_argument("--mineru-command", default="mineru")
+    build.add_argument("--force", action="store_true")
+    build.set_defaults(handler=_build_corpus)
+    index = commands.add_parser("index", help="Embed a graph and update the vector store")
+    index.add_argument("graph")
+    index.add_argument("--embedding-cache", default="data/cache/base_embeddings.npz")
+    index.add_argument("--config", default="configs/default.yaml")
+    index.set_defaults(handler=_index_graph)
+    train = commands.add_parser(
+        "train-index", help="Build hard query pairs and train the relation-supervised HGT index"
+    )
+    train.add_argument("--graph", required=True)
+    train.add_argument("--samples", required=True, help="Benchmark train JSONL")
+    train.add_argument("--base-embeddings", required=True)
+    train.add_argument("--output", default="outputs/srmg_index")
+    train.add_argument("--work-dir", default="data/train/srmg")
+    train.add_argument("--config", default="configs/default.yaml")
+    train.add_argument("--epochs", type=int, default=20)
+    train.add_argument("--batch-size", type=int, default=16)
+    train.add_argument("--learning-rate", type=float, default=1e-3)
+    train.add_argument("--relation-weight", type=float, default=0.2)
+    train.add_argument("--seed", type=int, default=42)
+    train.add_argument("--device", default="cuda")
+    train.set_defaults(handler=_train_index)
     from paper_rag.benchmarking.cli import add_benchmark_parser
 
     add_benchmark_parser(commands)

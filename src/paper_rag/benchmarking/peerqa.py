@@ -21,11 +21,9 @@ from paper_rag.evidence_graph import EvidenceGraph, save_graph
 from paper_rag.parsing import MinerUAdapter
 
 
-PEERQA_ARCHIVES = (
-    "https://tudatalib.ulb.tu-darmstadt.de/bitstream/handle/tudatalib/4467/"
-    "peerqa-data-v1.0.zip?sequence=1&isAllowed=y",
-    "https://tudatalib.ulb.tu-darmstadt.de/bitstream/handle/tudatalib/4467/"
-    "peerqa-data-v1.0.zip?sequence=5&isAllowed=y",
+PEERQA_ARCHIVE = (
+    "https://tudatalib.ulb.tu-darmstadt.de/server/api/core/bitstreams/"
+    "b7d21b66-d7eb-4828-8226-4fc2e87ce994/content"
 )
 
 
@@ -38,7 +36,11 @@ def prepare_peerqa(
     workers: int = 4,
     mineru_command: str = "mineru",
 ) -> dict[str, Any]:
-    archive = _download_peerqa_archive(layout.raw / "peerqa-data-v1.0.zip", force=force)
+    archive = download_file(
+        PEERQA_ARCHIVE,
+        layout.raw / "peerqa-data-v1.0.zip",
+        force=force,
+    )
     data_root = extract_zip(archive, layout.raw / "dataset", force=force)
     qa_path = _find_one(data_root, "qa.jsonl")
     papers_path = _find_one(data_root, "papers.jsonl")
@@ -80,11 +82,18 @@ def prepare_peerqa(
         write_jsonl(layout.samples(split), rows)
     report = {
         "dataset": "peerqa",
-        "graph_mode": "official_sentences_plus_mineru_openreview",
+        "graph_mode": (
+            "official_sentences_plus_mineru_openreview"
+            if pdf_manifest
+            else "official_redistributable_sentences"
+        ),
         "questions": len(qa_rows),
         "evaluation_samples": len(samples),
         "nodes": len(graph.nodes),
         "papers": len({node.paper_id for node in graph.nodes.values()}),
+        "evaluation_scope": (
+            "official_all_papers" if download_pdfs else "official_redistributable_papers"
+        ),
         "missing_papers": sorted(
             required_papers - {node.paper_id for node in graph.nodes.values()}
         ),
@@ -95,16 +104,6 @@ def prepare_peerqa(
     }
     write_json(layout.processed / "prepare_report.json", report)
     return report
-
-
-def _download_peerqa_archive(target: Path, *, force: bool) -> Path:
-    errors = []
-    for url in PEERQA_ARCHIVES:
-        try:
-            return download_file(url, target, force=force)
-        except Exception as exc:
-            errors.append(f"{url}: {exc}")
-    raise RuntimeError("PeerQA download failed from all official URLs:\n" + "\n".join(errors))
 
 
 def _build_official_graph(rows: list[dict[str, Any]]) -> EvidenceGraph:

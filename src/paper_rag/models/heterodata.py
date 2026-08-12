@@ -12,11 +12,7 @@ def build_heterodata(
     embeddings: dict[str, np.ndarray],
     add_reverse_edges: bool = True,
 ):
-    """Map the stable evidence graph schema to PyG HeteroData.
-
-    Returns `(data, node_ids_by_type)`, which is the mapping needed to translate
-    HGT rows back to evidence IDs.
-    """
+    """Map the evidence graph to PyG data and stable per-type node IDs."""
     try:
         import torch
         from torch_geometric.data import HeteroData
@@ -50,4 +46,3 @@ def build_heterodata(
     for edge_type, pairs in typed_edges.items():
         data[edge_type].edge_index = torch.tensor(pairs, dtype=torch.long).t().contiguous()
     return data, dict(node_ids_by_type)
-

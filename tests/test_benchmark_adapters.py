@@ -1,8 +1,9 @@
 from pathlib import Path
 
-from paper_rag.benchmarking.base import grouped_split
+from paper_rag.benchmarking.base import BenchmarkLayout, grouped_split, write_json
 from paper_rag.benchmarking.mmdocrag import _build_quote_graph, _sample, _string_list
 from paper_rag.benchmarking.peerqa import _build_official_graph
+from paper_rag.benchmarking.runner import _validate_preparation
 from paper_rag.domain import NodeType
 
 
@@ -63,6 +64,30 @@ def test_mmdocrag_split_namespaces_prevent_qid_collisions() -> None:
     assert all(node_id.startswith("mmdocrag::test::") for node_id in sample["candidate_node_ids"])
 
 
+def test_mmdocrag_reuses_document_layout_nodes() -> None:
+    first = {
+        "q_id": 1,
+        "doc_name": "document",
+        "question": "First?",
+        "text_quotes": [
+            {"quote_id": "text1", "text": "Shared", "page_id": 1, "layout_id": 2}
+        ],
+        "img_quotes": [],
+        "gold_quotes": ["text1"],
+    }
+    second = {**first, "q_id": 2, "question": "Second?", "gold_quotes": ["text7"]}
+    second["text_quotes"] = [
+        {"quote_id": "text7", "text": "Shared", "page_id": 1, "layout_id": 2}
+    ]
+
+    graph, _ = _build_quote_graph([("development", first), ("development", second)], {})
+
+    assert len(graph.nodes) == 1
+    assert _sample(first, "development")["candidate_node_ids"] == _sample(
+        second, "development"
+    )["candidate_node_ids"]
+
+
 def test_grouped_split_keeps_documents_together() -> None:
     rows = [
         {"paper_id": paper_id, "query_id": f"{paper_id}-{index}"}
@@ -85,3 +110,16 @@ def test_grouped_split_keeps_documents_together() -> None:
 def test_mmdocrag_modality_metadata_accepts_scalar_or_list() -> None:
     assert _string_list("image") == ["image"]
     assert _string_list(["text", "image"]) == ["text", "image"]
+
+
+def test_peerqa_redistributable_scope_allows_licensed_subset(tmp_path) -> None:
+    layout = BenchmarkLayout.create("peerqa", tmp_path)
+    write_json(
+        layout.processed / "prepare_report.json",
+        {
+            "evaluation_scope": "official_redistributable_papers",
+            "missing_papers": ["openreview/paper"],
+        },
+    )
+
+    _validate_preparation(layout)

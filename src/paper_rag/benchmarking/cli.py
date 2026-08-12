@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from paper_rag.benchmarking.base import BenchmarkLayout
 from paper_rag.benchmarking.mmdocrag import prepare_mmdocrag
 from paper_rag.benchmarking.peerqa import prepare_peerqa
-from paper_rag.benchmarking.runner import DEFAULT_SYSTEMS, SYSTEMS, run_benchmark
+from paper_rag.benchmarking.runner import (
+    DEFAULT_SYSTEMS,
+    SYSTEMS,
+    run_benchmark,
+    train_benchmark_index,
+)
 
 
 DATASETS = ("peerqa", "mmdocrag")
@@ -26,10 +32,16 @@ def add_benchmark_parser(commands: argparse._SubParsersAction) -> None:
     _add_run_options(run)
     run.set_defaults(handler=_handle_run)
 
+    train = actions.add_parser("train", help="Train the graph index for prepared datasets")
+    _add_dataset_options(train)
+    _add_train_options(train)
+    train.set_defaults(handler=_handle_train)
+
     all_in_one = actions.add_parser("all", help="Prepare, index, evaluate, and compare")
     _add_dataset_options(all_in_one)
     _add_prepare_options(all_in_one)
     _add_run_options(all_in_one)
+    _add_train_options(all_in_one, optional=True)
     all_in_one.set_defaults(handler=_handle_all)
 
 
@@ -40,7 +52,20 @@ def _add_dataset_options(parser: argparse.ArgumentParser) -> None:
 
 def _add_prepare_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--setting", type=int, choices=(15, 20), default=20)
-    parser.add_argument("--skip-pdfs", action="store_true")
+    parser.add_argument(
+        "--peerqa-skip-pdfs",
+        "--skip-pdfs",
+        dest="peerqa_skip_pdfs",
+        action="store_true",
+        help="Evaluate only PeerQA papers present in the official text archive",
+    )
+    parser.add_argument(
+        "--mmdocrag-download-pdfs",
+        "--download-pdfs",
+        dest="mmdocrag_download_pdfs",
+        action="store_true",
+        help="Download MMDocRAG PDFs for later full-document experiments",
+    )
     parser.add_argument("--skip-mineru", action="store_true")
     parser.add_argument("--mineru-command", default="mineru")
     parser.add_argument("--workers", type=int, default=4)
@@ -60,6 +85,21 @@ def _add_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--allow-partial", action="store_true")
 
 
+def _add_train_options(parser: argparse.ArgumentParser, *, optional: bool = False) -> None:
+    if optional:
+        parser.add_argument("--train-hgt", action="store_true")
+    else:
+        parser.add_argument("--config", default="configs/default.yaml")
+        parser.add_argument("--reindex", action="store_true")
+    parser.add_argument("--hgt-output-root", default="outputs/benchmark_hgt")
+    parser.add_argument("--train-epochs", type=int, default=20)
+    parser.add_argument("--train-batch-size", type=int, default=16)
+    parser.add_argument("--train-learning-rate", type=float, default=1e-3)
+    parser.add_argument("--relation-weight", type=float, default=0.2)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", default="cuda")
+
+
 def _handle_prepare(args: argparse.Namespace) -> int:
     reports = _prepare(args)
     print(json.dumps(reports, ensure_ascii=False, indent=2))
@@ -73,9 +113,20 @@ def _handle_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_train(args: argparse.Namespace) -> int:
+    print(json.dumps(_train(args), ensure_ascii=False, indent=2))
+    return 0
+
+
 def _handle_all(args: argparse.Namespace) -> int:
     prepared = _prepare(args)
     print(json.dumps(prepared, ensure_ascii=False, indent=2))
+    if args.train_hgt:
+        print(json.dumps(_train(args), ensure_ascii=False, indent=2))
+        args.systems = list(dict.fromkeys([*args.systems, "full"]))
+        args.hgt_artifacts = args.hgt_output_root
+        if args.split == "official":
+            args.split = "test"
     reports = _run(args)
     for report in reports.values():
         print(report["table"])
@@ -90,7 +141,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, dict]:
             reports[dataset] = prepare_peerqa(
                 layout,
                 force=args.force,
-                download_pdfs=not args.skip_pdfs,
+                download_pdfs=not args.peerqa_skip_pdfs,
                 run_mineru=not args.skip_mineru,
                 workers=args.workers,
                 mineru_command=args.mineru_command,
@@ -100,7 +151,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, dict]:
                 layout,
                 setting=args.setting,
                 force=args.force,
-                download_pdfs=not args.skip_pdfs,
+                download_pdfs=args.mmdocrag_download_pdfs,
             )
     return reports
 
@@ -115,7 +166,7 @@ def _run(args: argparse.Namespace) -> dict[str, dict]:
             config_path=args.config,
             split=args.split,
             systems=args.systems,
-            hgt_artifacts=args.hgt_artifacts,
+            hgt_artifacts=_dataset_artifacts(args.hgt_artifacts, dataset),
             enable_generator=args.enable_generator,
             reindex=args.reindex,
             selection_top_k=args.selection_top_k,
@@ -125,3 +176,29 @@ def _run(args: argparse.Namespace) -> dict[str, dict]:
         )
         for dataset in args.datasets
     }
+
+
+def _train(args: argparse.Namespace) -> dict[str, dict]:
+    return {
+        dataset: train_benchmark_index(
+            BenchmarkLayout.create(dataset, args.root),
+            config_path=args.config,
+            output=_dataset_artifacts(args.hgt_output_root, dataset),
+            epochs=args.train_epochs,
+            batch_size=args.train_batch_size,
+            learning_rate=args.train_learning_rate,
+            relation_weight=args.relation_weight,
+            seed=args.seed,
+            device=args.device,
+            reindex=args.reindex,
+        )
+        for dataset in args.datasets
+    }
+
+
+def _dataset_artifacts(root: str | None, dataset: str) -> str | None:
+    if not root:
+        return None
+    path = Path(root)
+    direct = (path / "query_projector.pt").exists() or path.name == dataset
+    return str(path if direct else path / dataset)

@@ -71,24 +71,11 @@ def evaluate(
     details: list[dict[str, Any]] = []
     for sample in samples:
         unknown = sample.relevant_node_ids - graph.nodes.keys()
+        if sample.candidate_node_ids:
+            unknown.update(sample.candidate_node_ids - graph.nodes.keys())
+            unknown.update(sample.relevant_node_ids - sample.candidate_node_ids)
         if unknown:
-            raise KeyError(f"Sample {sample.query_id} references unknown nodes: {sorted(unknown)}")
-        unknown_candidates = sample.candidate_node_ids - graph.nodes.keys()
-        if unknown_candidates:
-            raise KeyError(
-                f"Sample {sample.query_id} has unknown candidates: {sorted(unknown_candidates)}"
-            )
-        if sample.candidate_node_ids and not sample.relevant_node_ids.issubset(
-            sample.candidate_node_ids
-        ):
-            raise ValueError(f"Sample {sample.query_id} candidate scope excludes gold nodes")
-        if sample.paper_ids:
-            gold_papers = {graph.nodes[node_id].paper_id for node_id in sample.relevant_node_ids}
-            if not gold_papers.issubset(sample.paper_ids):
-                raise ValueError(
-                    f"Sample {sample.query_id} paper scope excludes gold papers: "
-                    f"{sorted(gold_papers - sample.paper_ids)}"
-                )
+            raise KeyError(f"Sample {sample.query_id} has invalid evidence IDs: {sorted(unknown)}")
         started = perf_counter()
         result = pipeline.run(
             sample.query,

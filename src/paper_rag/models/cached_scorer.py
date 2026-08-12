@@ -23,7 +23,17 @@ class CachedHGTScorer:
         self.query_projector.eval()
         self.node_ids = json.loads((root / "node_ids.json").read_text(encoding="utf-8"))
         matrix = np.load(root / "graph_embeddings.npy").astype(np.float32)
-        if matrix.ndim != 2 or matrix.shape[1] != 256 or len(self.node_ids) != len(matrix):
+        metadata_path = root / "training.json"
+        metadata = (
+            json.loads(metadata_path.read_text(encoding="utf-8"))
+            if metadata_path.exists()
+            else {"hidden_dimension": 256}
+        )
+        if (
+            matrix.ndim != 2
+            or matrix.shape[1] != metadata["hidden_dimension"]
+            or len(self.node_ids) != len(matrix)
+        ):
             raise ValueError("Invalid HGT artifact dimensions")
         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
         self.matrix = matrix / np.maximum(norms, 1e-12)

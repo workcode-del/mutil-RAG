@@ -18,3 +18,12 @@ def test_zip_validation_accepts_and_extracts_archive(tmp_path) -> None:
     assert _valid_download(archive)
     output = extract_zip(archive, tmp_path / "output")
     assert (output / "qa.jsonl").read_text(encoding="utf-8") == "{}\n"
+
+
+def test_pdf_validation_checks_file_signature(tmp_path) -> None:
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"<html>rate limited</html>")
+    assert not _valid_download(pdf)
+
+    pdf.write_bytes(b"%PDF-1.7\n")
+    assert _valid_download(pdf)

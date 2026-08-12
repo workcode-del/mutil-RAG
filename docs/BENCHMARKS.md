@@ -1,14 +1,14 @@
-# 统一公开数据集评测
+# PeerQA 与 MMDocRAG 自动评测
 
-所有公开数据集通过一个入口管理：
+公开数据统一使用：
 
 ```bash
-paper-rag benchmark <prepare|run|all>
+paper-rag benchmark <prepare|train|run|all>
 ```
 
-当前适配器为 `peerqa` 和 `mmdocrag`。新增数据集只需实现准备函数并注册到 benchmark CLI，不需要复制检索和指标代码。
+## 1. 一键运行
 
-## 一条命令完成全部流程
+准备数据、建立索引并比较无需训练的方法：
 
 ```bash
 paper-rag benchmark all \
@@ -18,89 +18,109 @@ paper-rag benchmark all \
   --setting 20
 ```
 
-该命令依次执行：
-
-1. 下载官方标注、PDF 和图片；
-2. 解压并转换为统一证据图和 JSONL；
-3. 为缺失的 PeerQA OpenReview 论文调用 MinerU；
-4. 建立向量索引；
-5. 顺序运行 BM25、Dense、Reranker、图基线、PCST 和 EC-BFR；
-6. 保存每个系统的完整 JSON 报告并生成 CSV/Markdown 对比表。
-
-已存在且非空的下载文件会跳过；中断下载保存在 `.part` 文件并在下次续传。解压和 MinerU 输出也会跳过已完成项。只有显式传入 `--force` 或 `--reindex` 才会重做对应阶段。
-
-正式运行默认检查 `missing_papers`、`missing_images`、`download_errors` 和 `parse_errors`，存在不完整数据时直接停止，防止误把部分数据结果写入论文。只有排查流程时才使用 `--allow-partial`。
-
-MMDocRAG 的 PDF 和图片压缩包较大，应预留足够磁盘空间。若只想先验证文本流程，可以使用 `--skip-pdfs`；图片 quote 仍会下载，因为多模态索引和 Reranker 需要它们。
-
-## 分阶段运行
-
-只下载和转换：
+同时训练 HGT，并把 `full` 加入 held-out test 对比：
 
 ```bash
-paper-rag benchmark prepare \
-  --datasets peerqa mmdocrag \
-  --root data/benchmarks
-```
-
-只运行已经准备好的数据：
-
-```bash
-paper-rag benchmark run \
+paper-rag benchmark all \
   --datasets peerqa mmdocrag \
   --root data/benchmarks \
-  --systems bm25 dense dense_reranker one_hop ppr pcst pcst_closure \
-            ec_bfr ec_bfr_reranker
+  --config configs/default.yaml \
+  --setting 20 \
+  --train-hgt
 ```
 
-加入已训练 HGT 的完整方法：
+`all` 会依次下载和转换数据、建立 Dense 索引、可选训练 HGT、运行系统矩阵并生成 JSON 报告和 `comparison.csv`。已有下载、解压和 MinerU 结果会复用；`--force` 重做数据准备，`--reindex` 重建向量索引。
+
+## 2. 分阶段运行
 
 ```bash
+# 下载和转换
+paper-rag benchmark prepare \
+  --datasets peerqa mmdocrag --root data/benchmarks
+
+# 训练每个数据集自己的 HGT
+paper-rag benchmark train \
+  --datasets peerqa mmdocrag --root data/benchmarks \
+  --config configs/default.yaml
+
+# 运行已准备的数据
 paper-rag benchmark run \
-  --datasets peerqa mmdocrag \
-  --systems full \
-  --hgt-artifacts outputs/srmg_index
+  --datasets peerqa mmdocrag --root data/benchmarks \
+  --systems bm25 dense dense_reranker one_hop ppr pcst \
+            pcst_closure ec_bfr ec_bfr_reranker
+
+# 评测训练后的完整方法
+paper-rag benchmark run \
+  --datasets peerqa mmdocrag --root data/benchmarks \
+  --split test --systems full \
+  --hgt-artifacts outputs/benchmark_hgt
 ```
 
-默认 `--split official`：PeerQA 使用全部官方可映射问题，MMDocRAG 使用官方 `evaluation_20`。训练实验可显式使用 `--split train`、`--split dev` 或 `--split test`。
+HGT 产物默认写入 `outputs/benchmark_hgt/<dataset>`。运行时检查图哈希以及训练 query 与评测 query 是否重叠。
 
-## 目录结构
-
-```text
-data/benchmarks/
-├── peerqa/
-│   ├── raw/                 # 官方压缩包、PDF、MinerU 输出
-│   ├── processed/           # graph.json、all/train/dev/test.jsonl、索引缓存
-│   └── reports/             # 各系统 JSON 和 comparison.csv
-└── mmdocrag/
-    ├── raw/                 # dev/evaluation JSONL、images.zip、doc_pdfs.zip
-    ├── processed/           # quote 图、官方/训练划分、索引缓存
-    └── reports/
-```
-
-## 两个数据集的处理口径
+## 3. 数据处理口径
 
 ### PeerQA
 
-官方 `papers.jsonl` 已有的句子直接构图，保留官方 `idx`，因此证据映射不需要重新切句。官方数据中缺少正文的 OpenReview 论文会从 `https://openreview.net/pdf?id=...` 批量下载，再通过 MinerU 补入同一图。无法下载或解析的论文记录在 `prepare_report.json`，不会让整批已完成结果失效。
+- 从 TU DataLib 官方 DSpace bitstream API 下载标注包；
+- 直接使用 `papers.jsonl` 中的官方句子和 `idx` 构图；
+- 缺失正文的 OpenReview 论文默认批量下载 PDF，并用 MinerU 补入同一张图；
+- 按 `paper_id` 稳定划分 train/dev/test；
+- `--split official` 使用全部成功映射的问题。
 
-若机器暂时没有 MinerU，可用 `--skip-mineru` 先准备官方已有文本；这会减少 PeerQA 可评测问题数，不应作为最终论文结果。
+正式运行会检查下载、解析和缺失论文。只做官方可再分发文本子集的诊断可使用：
+
+```bash
+paper-rag benchmark all --datasets peerqa \
+  --peerqa-skip-pdfs --skip-mineru
+```
+
+这个子集口径不能与完整 PeerQA 主实验混写。`--allow-partial` 只用于排错。
 
 ### MMDocRAG
 
-默认使用 `setting=20`。每个问题的 text/image quote 直接转换为 Sentence/Figure 节点，并把官方 `gold_quotes` 转成 gold node ID。`candidate_node_ids` 会被传到 BM25 和 Qdrant，因此每个方法都严格在同一组 20 个官方候选中选择，不会误做成全文检索。
+- 从官方 Hugging Face 仓库下载 `dev_<setting>.jsonl`、`evaluation_<setting>.jsonl` 和 `images.zip`；
+- 默认 `setting=20`，即每个问题在官方 20 个 text/image quote 中选择证据；
+- quote 转为 `Sentence` 或 `Figure`，相同文档位置复用节点；
+- `gold_quotes` 转为 gold node ID，`candidate_node_ids` 限制 BM25 和 Dense 使用完全相同的候选；
+- `dev_20` 按文档划为内部 train/dev，`evaluation_20` 作为 test；
+- `--split official` 等同于 test。
 
-`dev_20` 保存为 development，并按 `doc_name` 生成内部 train/dev；`evaluation_20` 原样作为最终 test。开发数据和测试数据的节点 ID 带不同命名空间，即使官方 q_id 重复也不会冲突。
+官方候选协议不需要 PDF，默认不下载 `doc_pdfs.zip`。`--mmdocrag-download-pdfs` 目前只下载并解压 PDF，尚未自动把全文 MinerU 图与 quote 标注对齐。
 
-## 输出指标
+MMDocRAG quote 图不虚构 `next_sentence` 等关系，因此 HGT 的 `training.json` 可能显示 `relation_triples: 0`。此时只训练了 query-evidence 目标，不能作为关系监督有效性的主证据。全文关系图实验应单独实现标注对齐，并明确报告为 full-document protocol。
 
-统一报告包含：
+## 4. 默认系统
 
-- MRR、Recall@K、nDCG@K、Joint Recall@K；
-- Evidence Precision/Recall/F1；
-- Sentence/Figure/Caption/ChartData 的排序召回和证据 F1；
-- Closure Validity、Dependency Completeness；
-- Budget Violation、Evidence Cost、Latency；
-- 开启生成时的 Exact Match、Token F1、ROUGE-L 和 Citation F1。
+默认运行：
 
-MMDocRAG 的整体 Evidence F1 对应 quote selection F1，Sentence Evidence F1 和 Figure Evidence F1 分别对应文本与图片 quote 选择。BLEU 和官方 LLM Judge 仍应使用 MMDocRAG 官方脚本对生成结果复核。
+- `bm25`
+- `dense`
+- `dense_reranker`
+- `one_hop`
+- `ppr`
+- `pcst`
+- `pcst_closure`
+- `ec_bfr`
+- `ec_bfr_reranker`
+
+`full` 需要 HGT 产物，不在无训练默认列表中。各系统的具体差异见 [EVALUATION.md](EVALUATION.md)。
+
+## 5. 输出
+
+```text
+data/benchmarks/<dataset>/
+├── raw/                 # 下载文件、图片、PDF、MinerU 输出
+├── processed/
+│   ├── graph.json
+│   ├── train.jsonl / dev.jsonl / test.jsonl
+│   ├── base_embeddings.npz
+│   ├── dense_index.json
+│   └── prepare_report.json
+└── reports/
+    ├── <split>_<system>.json
+    ├── <split>_comparison.csv
+    └── <split>_summary.json
+```
+
+报告包含排序、证据集、节点类型、闭包、预算和延迟指标；启用生成时增加答案和引用指标。MMDocRAG 的 Evidence F1 可用于 quote selection 对比，但 BLEU 和官方 LLM Judge 尚未集成，需用其官方评测工具补充。

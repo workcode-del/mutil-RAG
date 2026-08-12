@@ -11,7 +11,7 @@ from paper_rag.benchmarking.base import (
     write_jsonl,
 )
 from paper_rag.benchmarking.download import download_file, extract_zip
-from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
+from paper_rag.domain import EvidenceNode, NodeType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
 
 
@@ -23,7 +23,7 @@ def prepare_mmdocrag(
     *,
     setting: int = 20,
     force: bool = False,
-    download_pdfs: bool = True,
+    download_pdfs: bool = False,
 ) -> dict[str, Any]:
     if setting not in {15, 20}:
         raise ValueError("MMDocRAG setting must be 15 or 20")
@@ -39,7 +39,8 @@ def prepare_mmdocrag(
     evaluation = read_jsonl(test_path)
     image_lookup = _file_lookup(image_root, {".jpg", ".jpeg", ".png", ".webp"})
     graph, missing_images = _build_quote_graph(
-        [*(('development', row) for row in development), *(('test', row) for row in evaluation)],
+        [("development", row) for row in development]
+        + [("test", row) for row in evaluation],
         image_lookup,
     )
     save_graph(graph, layout.graph)
@@ -84,27 +85,16 @@ def _build_quote_graph(
     graph = EvidenceGraph()
     missing_images: set[str] = set()
     for split, row in rows:
-        qid = str(row["q_id"])
-        paper_id = str(row["doc_name"])
-        text_nodes: list[tuple[tuple[int, int], str]] = []
         for quote in row.get("text_quotes", []):
-            node_id = _quote_node_id(split, qid, str(quote["quote_id"]))
             graph.add_node(
-                EvidenceNode(
-                    node_id,
-                    paper_id,
+                _quote_node(
+                    split,
+                    row,
+                    quote,
                     NodeType.SENTENCE,
                     text=str(quote.get("text", "")),
-                    page=_optional_int(quote.get("page_id")),
-                    attributes=_quote_attributes(qid, quote),
                 )
             )
-            text_nodes.append((_position(quote), node_id))
-        for source, target in zip(
-            [node_id for _, node_id in sorted(text_nodes)],
-            [node_id for _, node_id in sorted(text_nodes)][1:],
-        ):
-            graph.add_edge(EvidenceEdge(source, target, RelationType.NEXT_SENTENCE))
         for quote in row.get("img_quotes", []):
             raw_path = str(quote.get("img_path", ""))
             resolved = image_lookup.get(Path(raw_path).as_posix()) or image_lookup.get(
@@ -112,18 +102,14 @@ def _build_quote_graph(
             )
             if resolved is None:
                 missing_images.add(raw_path)
-            node_id = _quote_node_id(split, qid, str(quote["quote_id"]))
             graph.add_node(
-                EvidenceNode(
-                    node_id,
-                    paper_id,
+                _quote_node(
+                    split,
+                    row,
+                    quote,
                     NodeType.FIGURE,
                     image_path=str(resolved or raw_path),
-                    page=_optional_int(quote.get("page_id")),
-                    attributes={
-                        **_quote_attributes(qid, quote),
-                        "text_view": str(quote.get("img_description", "")),
-                    },
+                    text_view=str(quote.get("img_description", "")),
                 )
             )
     return graph, missing_images
@@ -131,26 +117,33 @@ def _build_quote_graph(
 
 def _sample(row: dict[str, Any], split: str) -> dict[str, Any]:
     qid = str(row["q_id"])
-    candidates = [
-        _quote_node_id(split, qid, str(quote["quote_id"]))
-        for quote in [*row.get("text_quotes", []), *row.get("img_quotes", [])]
-    ]
-    gold = [_quote_node_id(split, qid, str(quote_id)) for quote_id in row["gold_quotes"]]
+    quotes = [*row.get("text_quotes", []), *row.get("img_quotes", [])]
+    quote_ids = {
+        str(quote["quote_id"]): _quote_node_id(split, row, quote) for quote in quotes
+    }
     modalities = row.get("evidence_modality_type", row.get("evidence_modality"))
     return {
         "query_id": f"mmdocrag::{split}::{qid}",
         "paper_id": str(row["doc_name"]),
         "query": str(row["question"]),
         "answer": str(row.get("answer_interleaved") or row.get("answer_short", "")),
-        "relevant_node_ids": gold,
-        "candidate_node_ids": candidates,
+        "relevant_node_ids": [quote_ids[str(value)] for value in row["gold_quotes"]],
+        "candidate_node_ids": list(quote_ids.values()),
         "required_modalities": _string_list(modalities),
         "question_type": row.get("question_type"),
     }
 
 
-def _quote_node_id(split: str, qid: str, quote_id: str) -> str:
-    return f"mmdocrag::{split}::{qid}::{quote_id}"
+def _quote_node_id(split: str, row: dict[str, Any], quote: dict[str, Any]) -> str:
+    modality = str(quote.get("type") or ("image" if quote.get("img_path") else "text"))
+    page = quote.get("page_id")
+    layout = quote.get("layout_id")
+    location = (
+        f"{page}:{layout}"
+        if layout is not None
+        else f"q{row['q_id']}:{quote['quote_id']}"
+    )
+    return f"mmdocrag::{split}::{row['doc_name']}::{modality}:{location}"
 
 
 def _file_lookup(root: Path, suffixes: set[str]) -> dict[str, Path]:
@@ -162,18 +155,31 @@ def _file_lookup(root: Path, suffixes: set[str]) -> dict[str, Path]:
     return result
 
 
-def _quote_attributes(qid: str, quote: dict[str, Any]) -> dict[str, Any]:
+def _quote_attributes(quote: dict[str, Any]) -> dict[str, Any]:
     return {
-        "mmdocrag_qid": qid,
-        "quote_id": quote.get("quote_id"),
+        "source": "mmdocrag",
         "layout_id": quote.get("layout_id"),
     }
 
 
-def _position(quote: dict[str, Any]) -> tuple[int, int]:
-    return (
-        _optional_int(quote.get("page_id")) or -1,
-        _optional_int(quote.get("layout_id")) or -1,
+def _quote_node(
+    split: str,
+    row: dict[str, Any],
+    quote: dict[str, Any],
+    node_type: NodeType,
+    **content: Any,
+) -> EvidenceNode:
+    text_view = content.pop("text_view", None)
+    attributes = _quote_attributes(quote)
+    if text_view is not None:
+        attributes["text_view"] = text_view
+    return EvidenceNode(
+        _quote_node_id(split, row, quote),
+        str(row["doc_name"]),
+        node_type,
+        page=_optional_int(quote.get("page_id")),
+        attributes=attributes,
+        **content,
     )
 
 

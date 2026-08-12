@@ -1,110 +1,98 @@
-# 系统架构、模块契约与算法联系
+# 系统架构
 
-## 1. 运行边界
+本文只描述当前代码已经实现的主流程。运行命令见 [DEPLOYMENT.md](DEPLOYMENT.md)，公开数据评测见 [BENCHMARKS.md](BENCHMARKS.md)。
 
-| 环境/服务 | 主要依赖 | 输入 | 输出 |
-|---|---|---|---|
-| parser | 当前MinerU（论文依据MinerU2.5）、PyMuPDF | PDF | 规范证据图JSON、Figure图片、page/bbox |
-| chart | 外部OpenAI-compatible VLM；PP-Chart2Table仅作独立基线 | 仅折线图图片 | ChartData、置信度、不确定性、来源 |
-| embedding | Qwen3-VL-Embedding-2B | query、文本、图片 | 2048维归一化向量 |
-| reranker | Qwen3-VL-Reranker-2B | query与文本/原图/混合证据 | 相关性分数 |
-| graph | PyG、Qdrant、pcst_fast | 证据图、缓存向量、query | 候选节点、闭包证据森林 |
-| generation | Qwen3-VL兼容API | 证据森林与图片 | 带合法evidence_id的回答 |
-
-默认部署在同一个名称可自定义的Python 3.11 Conda环境中，Embedding、Reranker和图检索由一个API进程直接组装，便于论文阶段统一修改和调试。模块接口仍然保留HTTP实现；只有显存不足、使用远程GPU或后期生产部署时，才在同一Conda环境中把模型拆成多个进程。
-
-## 2. 数据图谱
-
-### 节点
-
-- 粗粒度：Paper、Section、Paragraph、Figure；
-- 细粒度：Sentence、Caption、ChartData；
-- 后续扩展：ChartSeries、Axis、Legend。首版可以把序列、坐标轴和图例保存在ChartData属性中，避免过早扩大图模式。
-
-### 显式关系
-
-- `Paper/Section/Paragraph --contains--> 下级节点`；
-- `Caption --caption_of--> Figure`；
-- `Sentence --refers_to--> Figure`；
-- `ChartData --derived_from--> Figure`；
-- `Sentence --next_sentence--> Sentence`；
-- `Node --semantically_similar--> Node`，仅作为低置信度弱边。
-
-每个节点保存稳定`node_id`、`paper_id`、`page`、`bbox`和provenance。图表派生节点额外保存extractor、parse_status、confidence和uncertainty。
-
-## 3. 结构化多模态索引（创新点一）
-
-### 3.1 基础召回
+## 1. 主流程
 
 ```text
-Sentence/Caption/ChartData --Qwen3-VL text--> R^2048
-Figure                    --Qwen3-VL image-> R^2048
-Query                     --Qwen3-VL query-> R^2048
+PDF
+ └─ MinerU → Sentence / Figure / Caption 证据图
+      └─ 可选图表增强 → ChartData
+           └─ Qwen3-VL Embedding → Qdrant + 基础向量缓存
+                └─ 可选 HGT 候选增强
+                     └─ 可选 Qwen3-VL Reranker
+                          └─ PCST 候选 → 证据闭包 → 硬预算森林
+                               └─ 可选 OpenAI-compatible 生成
 ```
 
-向量进入Qdrant，并按节点类型分别取top-k，防止大量句子淹没图片。Qwen3-VL-Embedding支持原图、文本和混合输入；当前索引对文本与原图独立编码，以保持索引简单，混合编码作为消融项。
+在线阶段使用 RRF 融合基础向量、HGT 和 Reranker 的排序。HGT 只给已召回节点打分，不替代 Qdrant 全库检索。
 
-### 3.2 结构增强
+## 2. 证据图
 
-基础向量通过节点类型投影和两层HGT：
+当前 MinerU 适配器实际生成：
+
+| 节点 | 内容 |
+|---|---|
+| `Sentence` | 切分后的正文句子 |
+| `Figure` | MinerU 导出的原图路径 |
+| `Caption` | 独立或图片内嵌图注 |
+| `ChartData` | 图表增强得到的线性化表格 |
+
+当前自动构建的关系：
+
+- `Sentence --next_sentence--> Sentence`
+- `Caption --caption_of--> Figure`
+- `Sentence --refers_to--> Figure`
+- `ChartData --derived_from--> Figure`
+
+节点保留 `node_id`、`paper_id`、页码、bbox、解析块 ID 和来源信息。`Paper`、`Section`、`Paragraph`、`contains`、`semantically_similar` 已在数据结构中预留，但当前 MinerU 主流程不生成，不能作为现有实验能力报告。
+
+MMDocRAG 官方协议直接把候选 quote 转成 `Sentence` 或 `Figure`。该图不推断原数据没有提供的关系，详见 [BENCHMARKS.md](BENCHMARKS.md)。
+
+## 3. 基础索引与 HGT
+
+基础索引对文本节点和原图分别编码为 2048 维向量，写入 Qdrant，并保存同一份 NPZ 供训练使用。检索时按节点类型分别取 top-k，减少文本节点数量对图片召回的挤压。
+
+HGT 使用配置中的节点类型投影和两层异构消息传递：
 
 ```text
-R^2048 --W_type--> R^256 --HGT(typed edges)--> graph_embedding R^256
-Query R^2048 --Wq/MLP------------------------> query_graph R^256
+node:  2048 → type projection → HGT → 256
+query: 2048 → MLP                  → 256
 ```
 
-训练信号来自PDF真实结构：Figure-Caption、Figure-Mention、Figure-ChartData为正关系，同论文相似但不对应的图片或文字作为难负样本。HGT只重排Qdrant候选，不承担全库ANN，因此可以独立关闭并做消融。
+训练包含两类目标：
 
-HGT发表于2020年，但这里只是基础消息传递算子；论文方法依据和新颖性来自科研证据关系监督，而不是声称提出新的HGT。
+1. 查询—证据 margin loss：每个 gold 节点配一个同类型 hard negative；
+2. 关系 InfoNCE：使用 `caption_of`、`refers_to`、`derived_from` 和 `next_sentence` 边。
 
-### 3.3 原图多模态精排
+训练关系只取训练论文，但模型对整张图计算节点表示。因此当前实现属于按论文隔离监督的传导式图编码；最终报告必须保证训练 query 与测试 query 不重叠。训练产物中的 `training.json` 记录图哈希、训练 query ID 和关系三元组数。
 
-Qwen3-VL-Reranker直接接收：
+## 4. 检索器
+
+代码提供以下统一检索接口：
+
+| 方法 | 实现 |
+|---|---|
+| `top_k` | 按融合分数选前 k 个节点 |
+| `one_hop` | top-k 后扩展一跳邻居 |
+| `ppr` | 在已召回节点子图上做 PPR 重排 |
+| `pcst` | 每篇论文选择一个 PCST 候选 |
+| `pcst_closure` | PCST 后补全证据依赖 |
+| `ec_bfr` | 多尺度 PCST、闭包后计费、跨论文硬预算选择 |
+
+EC-BFR 的闭包规则以最小不动点执行：选中 Figure 补 Caption，选中 ChartData 补 Figure，选中引用图的 Sentence 补 Figure；迭代后也会补齐该 Figure 的 Caption。
+
+成本模型是稳定代理值：文本按简单 token 规则估算，图片按固定 `image_unit` 计费。它用于方法内公平比较，不等同于生成模型的真实计费 token。槽位覆盖读取 `QuerySpec` 中的字段；实体新颖性依赖节点已有的 `attributes.entities`，当前 MinerU 流程没有自动 NER，因此该项通常不生效。
+
+## 5. 图表与生成
+
+`list-figures` 导出全部 Figure，当前没有自动折线图分类器，需要人工筛选清单。`enrich-charts` 可读取人工提供的 `linearized_table`，也可调用 OpenAI-compatible 多模态服务重复解析并聚合，生成 `ChartData --derived_from--> Figure`。
+
+生成模块是可选项。它把证据文本和原图发送到 OpenAI-compatible `/chat/completions`，要求返回 JSON：
 
 ```json
-{"query": {"text": "..."}, "documents": [{"text": "..."}, {"image": "fig.png", "text": "caption..."}]}
+{"answer":"...","evidence_ids":["paper:sentence:1:0"]}
 ```
 
-这替代旧版“Figure只转成caption文本后重排”的限制。Qdrant余弦、HGT分数和Reranker相关性默认用RRF融合，避免直接相加不同量纲；正式实验可在验证集上训练校准器。
+程序只接受当前证据森林中的 ID，不能验证每个自然语言断言是否真正由对应证据支持。
 
-## 4. EC-BFR检索（创新点二）
+## 6. 代码边界
 
-1. 将召回结果按paper_id分组，并扩展高置信度显式邻居；
-2. 对多个代价尺度运行PCST，生成若干论文内候选骨架；
-3. 回到原始有向异构图计算证据闭包，而不是在PCST无向图上解释依赖；
-4. Figure补Caption，ChartData补原Figure和Caption；需要时补引用句与实验条件；
-5. 闭包后去重、重新计费，超预算候选直接淘汰；
-6. 按相关性、问题槽位覆盖、实体新颖性和冗余惩罚选择跨论文森林。
-
-必须满足：
-
-- 幂等性：`C(C(S)) = C(S)`；
-- 来源完整：ChartData必须能回链原图和图注；
-- 硬预算：`Cost(Forest) <= Budget`；
-- 跨论文分量无需伪造连边。
-
-PCST是候选生成器而非创新本身。MAGE-RAG已经研究预算化多模态图导航；本项目区别是确定性类型闭包、闭包后重新计费、严格预算和跨论文森林，不依赖LLM Agent在线试错。
-
-## 5. 图表解析
-
-主环境使用OpenAI-compatible多模态API，PP-Chart2Table因依赖Transformers 5.x只作为独立服务或对比基线。训练无关的自集成层对同一图重复解析3次，对齐表格后对数值单元格取中位数，并把结果分歧转成uncertainty。低置信度数值可以参与召回，但回答精确数值时必须同时展示原图并标注不确定性。
-
-DePlot保留为2023传统基线，不再是主后端。只处理折线图，架构图、流程图和显微图不进入ChartData解析。
-
-## 6. 回答与可追溯性
-
-`serialize_forest`把证据写成`[evidence_id] type/page/content`，原图路径单独传给Qwen3-VL。生成结果必须返回answer和evidence_ids；程序校验ID必须属于当前证据森林，阻止模型伪造来源。界面再由ID查回paper_id、page、bbox和image_path。
-
-## 7. 消融开关
-
-| 模式 | HGT关系监督 | 闭包/森林 | 图像精排 | 用途 |
-|---|---:|---:|---:|---|
-| Qwen3-VL flat | 关 | 关 | 关 | 基础召回 |
-| Embedding + VL-Reranker | 关 | 关 | 开 | 强平坦基线 |
-| LILaC式分层候选基线 | 关 | 关 | 开 | 2025强相关基线 |
-| SRMG-Index | 开 | 关 | 开 | 创新点一 |
-| PCST | 可选 | 关 | 开 | 普通相关子图 |
-| EC-BFR | 可选 | 开 | 开 | 创新点二 |
-| Full | 开 | 开 | 开 | 最终系统 |
-
-参考依据：[Qwen3-VL检索](https://arxiv.org/abs/2601.04720)、[LILaC](https://arxiv.org/abs/2602.04263)、[MAGE-RAG](https://arxiv.org/abs/2606.15906)、[GFM-RAG代码](https://github.com/RManLuo/gfm-rag)。
+| 模块 | 职责 |
+|---|---|
+| `parsing`、`evidence_graph` | MinerU 适配、句级定位、构图和图表增强 |
+| `embedding`、`reranking` | 多模态召回、BM25 和重排 |
+| `models`、`training.py` | HGT、训练损失和离线产物 |
+| `retrieval` | top-k、PPR、PCST、闭包和 EC-BFR |
+| `evaluation`、`benchmarking` | 指标、公开数据转换和实验矩阵 |
+| `workflow.py`、`bootstrap.py` | 批处理流程和运行时组件装配 |

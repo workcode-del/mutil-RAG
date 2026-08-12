@@ -69,7 +69,8 @@ PeerQA 与 MMDocRAG 共用一个入口，以下命令会断点续传数据、批
 paper-rag benchmark all \
   --datasets peerqa mmdocrag \
   --root data/benchmarks \
-  --config configs/default.yaml
+  --config configs/default.yaml \
+  --train-hgt
 ```
 
-运行模式、数据目录、候选范围和指标定义见 [统一公开数据集评测](docs/BENCHMARKS.md)。
+去掉 `--train-hgt` 可只比较无训练基线；保留它则按 train/test 隔离训练创新点一，并加入完整方法。运行模式、数据目录、候选范围和指标定义见 [统一公开数据集评测](docs/BENCHMARKS.md)。

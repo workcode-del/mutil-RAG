@@ -62,7 +62,6 @@ def create_hgt_model(metadata: tuple[list[str], list[tuple[str, str, str]]], con
             }
             for conv in self.convs:
                 messages = conv(hidden, edge_index_dict)
-                # PyG may omit types without incoming messages. Residuals keep them valid.
                 hidden = {
                     node_type: torch.nn.functional.normalize(
                         residual

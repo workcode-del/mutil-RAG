@@ -71,4 +71,10 @@ def extract_zip(archive: str | Path, destination: str | Path, *, force: bool = F
 
 
 def _valid_download(path: Path) -> bool:
-    return path.suffix.lower() != ".zip" or zipfile.is_zipfile(path)
+    suffix = path.suffix.lower()
+    if suffix == ".zip":
+        return zipfile.is_zipfile(path)
+    if suffix == ".pdf":
+        with path.open("rb") as stream:
+            return stream.read(5) == b"%PDF-"
+    return True

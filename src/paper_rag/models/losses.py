@@ -26,4 +26,3 @@ def query_evidence_margin_loss(query, positive, negative, margin: float = 0.2):
     positive_score = (query * positive).sum(dim=-1)
     negative_score = (query * negative).sum(dim=-1)
     return functional.relu(margin - positive_score + negative_score).mean()
-

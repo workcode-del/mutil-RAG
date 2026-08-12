@@ -45,7 +45,6 @@ class QdrantEvidenceStore:
             )
         points = []
         for node, vector in zip(nodes, vectors, strict=True):
-            # Qdrant point IDs are UUID/int. Stable UUID5 keeps EvidenceNode IDs in payload.
             import uuid
 
             point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, node.node_id))
@@ -101,7 +100,6 @@ class QdrantEvidenceStore:
             query_filter = self.models.Filter(
                 must=conditions
             )
-            # query_points is the current client API; adapting future changes stays here.
             response = self.client.query_points(
                 collection_name=self.collection,
                 query=vector.tolist(),

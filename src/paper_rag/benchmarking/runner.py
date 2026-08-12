@@ -6,16 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
-from paper_rag.benchmarking.base import BenchmarkLayout, write_json
+from paper_rag.benchmarking.base import BenchmarkLayout, read_jsonl, write_json
 from paper_rag.bootstrap import build_deployed_pipeline, build_retriever_config
 from paper_rag.config import load_yaml
 from paper_rag.evaluation import evaluate, load_samples, save_report
 from paper_rag.evaluation.comparison import save_comparison
-from paper_rag.indexing import compute_base_embeddings, upsert_base_embeddings
 from paper_rag.models.cached_scorer import CachedHGTScorer
 from paper_rag.retrieval import build_evidence_retriever
+from paper_rag.training import build_query_pairs, embed_training_queries, train_hgt
+from paper_rag.workflow import index_graph
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,9 +55,6 @@ def run_benchmark(
     cutoffs: tuple[int, ...] = (1, 3, 5, 10),
     allow_partial: bool = False,
 ) -> dict[str, Any]:
-    unknown = set(systems) - SYSTEMS.keys()
-    if unknown:
-        raise ValueError(f"Unknown benchmark systems: {sorted(unknown)}")
     if "full" in systems and not hgt_artifacts:
         raise ValueError("The full system requires --hgt-artifacts")
     sample_path = layout.samples(_official_split(layout.name) if split == "official" else split)
@@ -66,6 +62,8 @@ def run_benchmark(
         raise FileNotFoundError(f"Prepare {layout.name} before running its benchmark")
     if not allow_partial:
         _validate_preparation(layout)
+    if "full" in systems:
+        _validate_hgt_artifacts(layout, sample_path, Path(hgt_artifacts))
     selected = [SYSTEMS[name] for name in systems]
     if any(system.candidate_backend == "embedding" for system in selected):
         ensure_dense_index(layout, config_path, force=reindex)
@@ -145,6 +143,54 @@ def run_benchmark(
     return summary
 
 
+def train_benchmark_index(
+    layout: BenchmarkLayout,
+    *,
+    config_path: str | Path,
+    output: str | Path,
+    epochs: int = 20,
+    batch_size: int = 16,
+    learning_rate: float = 1e-3,
+    relation_weight: float = 0.2,
+    seed: int = 42,
+    device: str = "cuda",
+    reindex: bool = False,
+) -> dict[str, Any]:
+    ensure_dense_index(layout, config_path, force=reindex)
+    work = layout.processed / "training"
+    pairs = build_query_pairs(
+        layout.graph,
+        layout.samples("train"),
+        work / "query_pairs.jsonl",
+        embeddings_path=layout.processed / "base_embeddings.npz",
+        seed=seed,
+    )
+    queries = embed_training_queries(
+        pairs,
+        work / "query_embeddings.npz",
+        config_path,
+        batch_size=batch_size,
+    )
+    graph_config = load_yaml(config_path).get("graph_index", {})
+    artifacts = train_hgt(
+        layout.graph,
+        layout.processed / "base_embeddings.npz",
+        pairs,
+        queries,
+        output,
+        epochs=epochs,
+        learning_rate=learning_rate,
+        relation_weight=relation_weight,
+        seed=seed,
+        device=device,
+        hidden_dimension=int(graph_config.get("hidden_dimension", 256)),
+        layers=int(graph_config.get("layers", 2)),
+        heads=int(graph_config.get("heads", 4)),
+    )
+    metadata = json.loads((artifacts / "training.json").read_text(encoding="utf-8"))
+    return {"dataset": layout.name, "artifacts": str(artifacts.resolve()), **metadata}
+
+
 def ensure_dense_index(
     layout: BenchmarkLayout,
     config_path: str | Path,
@@ -163,21 +209,11 @@ def ensure_dense_index(
         if state.get("graph_sha256") == graph_digest:
             return marker
 
-    pipeline = build_deployed_pipeline(
+    report = index_graph(
         layout.graph,
         config_path,
-        enable_reranker=False,
-        candidate_backend="embedding",
-        retrieval_method="top_k",
+        layout.processed / "base_embeddings.npz",
     )
-    try:
-        if pipeline.embedder is None:
-            raise RuntimeError("Dense indexing requires an embedder")
-        embeddings, report = compute_base_embeddings(pipeline.graph, pipeline.embedder)
-        upsert_base_embeddings(pipeline.vector_store, pipeline.graph, embeddings)
-        np.savez_compressed(layout.processed / "base_embeddings.npz", **embeddings)
-    finally:
-        _close_pipeline(pipeline)
     write_json(
         marker,
         {
@@ -199,16 +235,31 @@ def _validate_preparation(layout: BenchmarkLayout) -> None:
     if not report_path.exists():
         return
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    problems = {
-        key: report.get(key)
-        for key in ("missing_papers", "missing_images", "download_errors", "parse_errors")
-        if report.get(key)
-    }
+    keys = ["missing_images", "download_errors", "parse_errors"]
+    if report.get("evaluation_scope") != "official_redistributable_papers":
+        keys.append("missing_papers")
+    problems = {key: report.get(key) for key in keys if report.get(key)}
     if problems:
         raise RuntimeError(
             f"Incomplete {layout.name} preparation: {problems}. "
             "Fix the reported items or pass --allow-partial for a diagnostic run."
         )
+
+
+def _validate_hgt_artifacts(
+    layout: BenchmarkLayout, samples: Path, artifacts: Path
+) -> None:
+    metadata_path = artifacts / "training.json"
+    if not metadata_path.exists():
+        return
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    graph_digest = hashlib.sha256(layout.graph.read_bytes()).hexdigest()
+    if metadata.get("graph_sha256") != graph_digest:
+        raise ValueError(f"HGT artifacts do not match the {layout.name} graph")
+    train_ids = set(metadata.get("train_query_ids", ()))
+    evaluation_ids = {row["query_id"] for row in read_jsonl(samples)}
+    if train_ids & evaluation_ids:
+        raise ValueError("Training and evaluation queries overlap; use a held-out split")
 
 
 def _close_pipeline(pipeline: Any) -> None:

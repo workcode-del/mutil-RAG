@@ -10,8 +10,11 @@ def download_file(url: str, target: str | Path, *, force: bool = False) -> Path:
     destination = Path(target)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists() and destination.stat().st_size > 0 and not force:
-        print(f"Using cached download: {destination}")
-        return destination
+        if _valid_download(destination):
+            print(f"Using cached download: {destination}")
+            return destination
+        print(f"Invalid cached download; replacing: {destination}")
+        force = True
 
     partial = destination.with_suffix(destination.suffix + ".part")
     offset = partial.stat().st_size if partial.exists() and not force else 0
@@ -37,12 +40,20 @@ def download_file(url: str, target: str | Path, *, force: bool = False) -> Path:
     if not partial.exists() or partial.stat().st_size == 0:
         raise RuntimeError(f"Downloaded file is empty: {url}")
     os.replace(partial, destination)
+    if not _valid_download(destination):
+        destination.unlink()
+        raise RuntimeError(
+            f"Downloaded content is not a valid {destination.suffix} file: {url}. "
+            "The server may have returned an HTML error or access page."
+        )
     print(f"Downloaded {destination.stat().st_size / 1024**2:.1f} MiB: {destination}")
     return destination
 
 
 def extract_zip(archive: str | Path, destination: str | Path, *, force: bool = False) -> Path:
     source = Path(archive)
+    if not zipfile.is_zipfile(source):
+        raise zipfile.BadZipFile(f"Not a valid ZIP archive: {source}")
     root = Path(destination)
     marker = root / f".{source.name}.extracted"
     if marker.exists() and not force:
@@ -57,3 +68,7 @@ def extract_zip(archive: str | Path, destination: str | Path, *, force: bool = F
         bundle.extractall(root)
     marker.touch()
     return root
+
+
+def _valid_download(path: Path) -> bool:
+    return path.suffix.lower() != ".zip" or zipfile.is_zipfile(path)

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from paper_rag.reranking import Qwen3VLReranker
+from paper_rag.log import configure_logging
+
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Qwen3-VL Reranker Service")
 model: Qwen3VLReranker | None = None
@@ -19,6 +25,7 @@ class RerankRequest(BaseModel):
 @app.on_event("startup")
 def load_model() -> None:
     global model
+    logger.info("Loading reranker service model")
     model = Qwen3VLReranker(
         model_name=os.getenv("RERANKER_MODEL", "Qwen/Qwen3-VL-Reranker-2B"),
         official_repo=os.getenv("QWEN3_VL_RETRIEVAL_REPO"),
@@ -28,6 +35,7 @@ def load_model() -> None:
         modelscope_id=os.getenv("RERANKER_MODELSCOPE_ID"),
         model_cache_dir=os.getenv("MODEL_CACHE_DIR", "data/models"),
     )
+    logger.info("Reranker service ready")
 
 
 @app.get("/health")

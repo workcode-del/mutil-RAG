@@ -7,9 +7,11 @@ from typing import Any
 
 from paper_rag.evaluation.evidence_mapping import map_evidence
 from paper_rag.evidence_graph import load_graph
+from paper_rag.log import configure_logging
 
 
 def main() -> None:
+    configure_logging()
     parser = argparse.ArgumentParser(description="Map PeerQA evidence to local graph node IDs")
     parser.add_argument("qa_jsonl", help="PeerQA qa.jsonl")
     parser.add_argument("--graph", required=True, help="Combined local evidence graph")

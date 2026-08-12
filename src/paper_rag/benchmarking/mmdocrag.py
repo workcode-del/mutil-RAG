@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,9 @@ from paper_rag.domain import EvidenceNode, NodeType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
 
 
+logger = logging.getLogger(__name__)
+
+
 HF_ROOT = "https://huggingface.co/datasets/MMDocIR/MMDocRAG/resolve/main"
 
 
@@ -25,6 +29,7 @@ def prepare_mmdocrag(
     force: bool = False,
     download_pdfs: bool = False,
 ) -> dict[str, Any]:
+    logger.info("Preparing MMDocRAG: root=%s setting=%d", layout.root, setting)
     if setting not in {15, 20}:
         raise ValueError("MMDocRAG setting must be 15 or 20")
     dev_path = _download(layout, f"dev_{setting}.jsonl", force)
@@ -68,6 +73,13 @@ def prepare_mmdocrag(
         "official_candidate_scope": True,
     }
     write_json(layout.processed / "prepare_report.json", report)
+    logger.info(
+        "MMDocRAG ready: development=%d test=%d nodes=%d missing_images=%d",
+        len(development_samples),
+        len(test_samples),
+        len(graph.nodes),
+        len(missing_images),
+    )
     return report
 
 

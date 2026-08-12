@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,9 @@ from paper_rag.config import load_yaml
 from paper_rag.evidence_graph import EvidenceGraph, load_graph, save_graph
 from paper_rag.indexing import IndexingReport, compute_base_embeddings, upsert_base_embeddings
 from paper_rag.parsing import MinerUAdapter
+
+
+logger = logging.getLogger(__name__)
 
 
 def _content_stem(path: Path) -> str:
@@ -31,18 +35,27 @@ def ingest_pdfs(
     parsed_names = {_content_stem(path) for path in content_lists}
     pdfs = sorted(source.rglob("*.pdf"))
     pending = pdfs if force else [pdf for pdf in pdfs if pdf.stem not in parsed_names]
-    for pdf in pending:
+    logger.info("Corpus parse: pdfs=%d pending=%d mineru=%s", len(pdfs), len(pending), parsed)
+    for index, pdf in enumerate(pending, 1):
+        logger.info("MinerU [%d/%d]: %s", index, len(pending), pdf.name)
         subprocess.run(
             [mineru_command, "-p", str(pdf), "-o", str(parsed), "-b", "pipeline"],
             check=True,
         )
     content_lists = list(parsed.rglob("*_content_list.json"))
+    logger.info("Building evidence graph from %d MinerU outputs", len(content_lists))
     graph = EvidenceGraph()
     for content in sorted(content_lists):
         paper_id = _content_stem(content)
         paper = MinerUAdapter().from_json(content, paper_id)
         graph.extend(paper.nodes.values(), paper.edges)
     save_graph(graph, graph_path)
+    logger.info(
+        "Evidence graph ready: nodes=%d edges=%d output=%s",
+        len(graph.nodes),
+        len(graph.edges),
+        graph_path,
+    )
     return graph
 
 
@@ -53,6 +66,7 @@ def index_graph(
 ) -> IndexingReport:
     config = load_yaml(config_path)
     graph = load_graph(graph_path)
+    logger.info("Vector index: nodes=%d graph=%s", len(graph.nodes), graph_path)
     store = build_vector_store(config)
     embeddings, report = compute_base_embeddings(graph, build_embedder(config))
     target = Path(embedding_cache)
@@ -61,6 +75,13 @@ def index_graph(
     upsert_base_embeddings(store, graph, embeddings)
     if hasattr(store.client, "close"):
         store.client.close()
+    logger.info(
+        "Vector index ready: text=%d figures=%d dimension=%d cache=%s",
+        report.text_nodes,
+        report.figure_nodes,
+        report.dimension,
+        target,
+    )
     return report
 
 

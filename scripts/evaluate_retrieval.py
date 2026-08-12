@@ -5,10 +5,12 @@ import json
 
 from paper_rag.bootstrap import build_deployed_pipeline
 from paper_rag.evaluation import evaluate, load_samples, save_report
+from paper_rag.log import configure_logging
 from paper_rag.retrieval import RETRIEVAL_METHODS
 
 
 def main() -> None:
+    configure_logging()
     parser = argparse.ArgumentParser(
         description="Evaluate retrieval, evidence, budget, and citations"
     )

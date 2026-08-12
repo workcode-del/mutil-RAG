@@ -1,7 +1,11 @@
+import logging
 from typing import Any
 
 from paper_rag.domain import QuerySpec
 from paper_rag.pipeline import ScientificRAGPipeline
+
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(pipeline: ScientificRAGPipeline | None = None):
@@ -32,6 +36,7 @@ def create_app(pipeline: ScientificRAGPipeline | None = None):
         active_pipeline = app.state.pipeline
         if active_pipeline is None:
             raise HTTPException(503, "Pipeline is not initialized; see deployment documentation")
+        logger.info("Query received: length=%d", len(request.query))
         result = active_pipeline.run(
             QuerySpec(
                 query=request.query,
@@ -41,7 +46,14 @@ def create_app(pipeline: ScientificRAGPipeline | None = None):
                 value=request.value,
                 unit=request.unit,
                 conditions=request.conditions,
-            )
+            ),
+            log_stages=True,
+        )
+        logger.info(
+            "Query complete: evidence=%d cost=%d generated=%s",
+            len(result.forest.node_ids),
+            result.forest.total_cost,
+            result.answer is not None,
         )
         return {
             "answer": result.answer.text if result.answer else None,

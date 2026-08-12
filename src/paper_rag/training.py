@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import random
 from collections import defaultdict
 from pathlib import Path
@@ -14,6 +15,9 @@ from paper_rag.evidence_graph import load_graph
 from paper_rag.io import read_jsonl, write_jsonl
 from paper_rag.models import HGTConfig, build_heterodata, create_hgt_model
 from paper_rag.models.losses import query_evidence_margin_loss, relation_info_nce
+
+
+logger = logging.getLogger(__name__)
 
 
 def build_query_pairs(
@@ -58,7 +62,9 @@ def build_query_pairs(
                     "negative_node_id": negative,
                 }
             )
-    return write_jsonl(output, rows)
+    target = write_jsonl(output, rows)
+    logger.info("Training pairs ready: pairs=%d output=%s", len(rows), target)
+    return target
 
 
 def embed_training_queries(
@@ -72,6 +78,7 @@ def embed_training_queries(
     embedder = build_embedder(load_yaml(config_path))
     vectors: dict[str, np.ndarray] = {}
     queries = {str(sample["query_id"]): str(sample["query"]) for sample in samples}
+    logger.info("Embedding training queries: unique_queries=%d", len(queries))
     items = list(queries.items())
     for start in range(0, len(items), batch_size):
         batch = items[start : start + batch_size]
@@ -82,6 +89,7 @@ def embed_training_queries(
     target = Path(output)
     target.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(target, **vectors)
+    logger.info("Query embeddings ready: output=%s", target)
     return target
 
 
@@ -113,6 +121,7 @@ def train_hgt(
     if not samples:
         raise ValueError("No trainable query pairs were produced")
     input_dimension = int(next(iter(base_embeddings.values())).shape[-1])
+    logger.info("Preparing HGT graph and model: nodes=%d device=%s", len(graph.nodes), device)
     data, ids_by_type = build_heterodata(graph, base_embeddings, add_reverse_edges=True)
     data = data.to(device)
     model = create_hgt_model(
@@ -127,6 +136,14 @@ def train_hgt(
     }
     train_papers = {graph.nodes[row["positive_node_id"]].paper_id for row in samples}
     relations = _relation_triples(graph, train_papers, seed)
+    logger.info(
+        "HGT training: nodes=%d query_pairs=%d relation_triples=%d epochs=%d device=%s",
+        len(graph.nodes),
+        len(samples),
+        len(relations),
+        epochs,
+        device,
+    )
     query_tensor = torch.from_numpy(
         np.stack([query_embeddings[row["query_id"]] for row in samples]).astype(np.float32)
     ).to(device)
@@ -147,7 +164,7 @@ def train_hgt(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
-        print(f"epoch={epoch + 1} loss={float(loss.detach().cpu()):.6f}")
+        logger.info("HGT epoch %d/%d loss=%.6f", epoch + 1, epochs, float(loss.detach().cpu()))
 
     metadata = {
         "graph_sha256": hashlib.sha256(Path(graph_path).read_bytes()).hexdigest(),
@@ -161,7 +178,9 @@ def train_hgt(
         "epochs": epochs,
         "seed": seed,
     }
-    return _export_hgt(model, data, ids_by_type, output, metadata)
+    artifacts = _export_hgt(model, data, ids_by_type, output, metadata)
+    logger.info("HGT artifacts ready: %s", artifacts)
+    return artifacts
 
 
 def _load_npz(path: str | Path) -> dict[str, np.ndarray]:

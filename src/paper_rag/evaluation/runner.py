@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
@@ -9,6 +10,9 @@ from typing import Any
 from paper_rag.domain import NodeType, QuerySpec
 from paper_rag.evaluation.metrics import result_metrics, serialize_hit, summarize
 from paper_rag.pipeline import ScientificRAGPipeline
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +73,9 @@ def evaluate(
 ) -> dict[str, Any]:
     graph = pipeline.graph
     details: list[dict[str, Any]] = []
-    for sample in samples:
+    total = len(samples)
+    logger.info("Evaluation start: samples=%d", total)
+    for index, sample in enumerate(samples, 1):
         unknown = sample.relevant_node_ids - graph.nodes.keys()
         if sample.candidate_node_ids:
             unknown.update(sample.candidate_node_ids - graph.nodes.keys())
@@ -103,6 +109,8 @@ def evaluate(
                 "evidence_ids": result.answer.evidence_ids if result.answer else [],
             }
         )
+        if index == total or index % 50 == 0:
+            logger.info("Evaluation progress: %d/%d", index, total)
     return {
         "metadata": metadata or {},
         "summary": {

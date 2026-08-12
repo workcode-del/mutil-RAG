@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from paper_rag.embedding import Qwen3VLEmbedder
+from paper_rag.log import configure_logging
+
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Qwen3-VL Embedding Service")
 model: Qwen3VLEmbedder | None = None
@@ -18,6 +24,7 @@ class BatchRequest(BaseModel):
 @app.on_event("startup")
 def load_model() -> None:
     global model
+    logger.info("Loading embedding service model")
     model = Qwen3VLEmbedder(
         model_name=os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-VL-Embedding-2B"),
         official_repo=os.getenv("QWEN3_VL_RETRIEVAL_REPO"),
@@ -28,6 +35,7 @@ def load_model() -> None:
         modelscope_id=os.getenv("EMBEDDING_MODELSCOPE_ID"),
         model_cache_dir=os.getenv("MODEL_CACHE_DIR", "data/models"),
     )
+    logger.info("Embedding service ready: dimension=%d", model.dimension)
 
 
 def active_model() -> Qwen3VLEmbedder:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,6 +22,9 @@ from paper_rag.evidence_graph import EvidenceGraph, save_graph
 from paper_rag.parsing import MinerUAdapter
 
 
+logger = logging.getLogger(__name__)
+
+
 PEERQA_ARCHIVE = (
     "https://tudatalib.ulb.tu-darmstadt.de/server/api/core/bitstreams/"
     "b7d21b66-d7eb-4828-8226-4fc2e87ce994/content"
@@ -36,6 +40,7 @@ def prepare_peerqa(
     workers: int = 4,
     mineru_command: str = "mineru",
 ) -> dict[str, Any]:
+    logger.info("Preparing PeerQA: root=%s", layout.root)
     archive = download_file(
         PEERQA_ARCHIVE,
         layout.raw / "peerqa-data-v1.0.zip",
@@ -49,6 +54,12 @@ def prepare_peerqa(
     available_papers = {node.paper_id for node in graph.nodes.values()}
     required_papers = {str(row["paper_id"]) for row in qa_rows}
     missing_papers = sorted(required_papers - available_papers)
+    logger.info(
+        "PeerQA loaded: questions=%d official_papers=%d missing_papers=%d",
+        len(qa_rows),
+        len(available_papers),
+        len(missing_papers),
+    )
     pdf_root = layout.raw / "pdfs"
     pdf_manifest = {
         paper_id: pdf_root / f"{safe_name(paper_id)}.pdf"
@@ -103,6 +114,12 @@ def prepare_peerqa(
         "conversion": conversion,
     }
     write_json(layout.processed / "prepare_report.json", report)
+    logger.info(
+        "PeerQA ready: samples=%d nodes=%d papers=%d",
+        len(samples),
+        len(graph.nodes),
+        report["papers"],
+    )
     return report
 
 
@@ -189,7 +206,7 @@ def _parse_pdfs(
         content = _find_content_list(output, pdf.stem)
         try:
             if force or content is None:
-                print(f"MinerU: {paper_id}")
+                logger.info("PeerQA MinerU: %s", paper_id)
                 subprocess.run(
                     [command, "-p", str(pdf), "-o", str(output), "-b", "pipeline"],
                     check=True,

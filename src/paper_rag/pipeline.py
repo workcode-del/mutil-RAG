@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import logging
+from time import perf_counter
 from typing import Protocol
 
 import numpy as np
@@ -12,6 +14,9 @@ from paper_rag.evidence_graph import EvidenceGraph
 from paper_rag.generation.base import Answer, AnswerGenerator
 from paper_rag.reranking.base import Reranker
 from paper_rag.retrieval.base import EvidenceRetriever
+
+
+logger = logging.getLogger(__name__)
 
 
 class VectorStore(Protocol):
@@ -64,9 +69,13 @@ class ScientificRAGPipeline:
         per_type_top_k: int | None = None,
         paper_ids: set[str] | None = None,
         candidate_node_ids: set[str] | None = None,
+        log_stages: bool = False,
     ) -> PipelineResult:
+        started = perf_counter()
         effective_top_k = per_type_top_k or self.default_per_type_top_k
         query_vector = self.embedder.embed_queries([query.query])[0] if self.embedder else None
+        if log_stages:
+            logger.info("Query stage: candidate recall (%s)", type(self.vector_store).__name__)
         hits = self.vector_store.search(
             query.query,
             query_vector,
@@ -75,13 +84,18 @@ class ScientificRAGPipeline:
             paper_ids,
             candidate_node_ids,
         )
+        logger.debug("Candidate recall complete: hits=%d", len(hits))
         if self.graph_scorer:
+            if log_stages:
+                logger.info("Query stage: HGT candidate scoring")
             if query_vector is None:
                 raise ValueError("HGT scoring requires a query embedder")
             graph_scores = self.graph_scorer(query_vector, hits)
             for hit in hits:
                 hit.score_components["hgt"] = graph_scores.get(hit.node_id, 0.0)
         if self.reranker:
+            if log_stages:
+                logger.info("Query stage: multimodal reranking (%s)", type(self.reranker).__name__)
             documents: list[str | dict[str, object]] = []
             for hit in hits:
                 node = self.graph.nodes[hit.node_id]
@@ -108,6 +122,18 @@ class ScientificRAGPipeline:
         hits.sort(key=lambda hit: hit.score, reverse=True)
         hits = self.forest_retriever.rank_hits(query, hits)
 
+        if log_stages:
+            logger.info("Query stage: evidence retrieval (%s)", type(self.forest_retriever).__name__)
         forest = self.forest_retriever.retrieve(query, hits)
+        if log_stages and self.generator:
+            logger.info("Query stage: answer generation (%s)", type(self.generator).__name__)
         answer = self.generator.generate(query, forest, self.graph) if self.generator else None
+        logger.debug(
+            "Query complete: retrieval=%s hits=%d selected=%d cost=%d time_ms=%.1f",
+            type(self.forest_retriever).__name__,
+            len(hits),
+            len(forest.node_ids),
+            forest.total_cost,
+            (perf_counter() - started) * 1000,
+        )
         return PipelineResult(query, hits, forest, answer)

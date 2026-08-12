@@ -4,6 +4,10 @@ import os
 
 from paper_rag.api import create_app
 from paper_rag.bootstrap import build_deployed_pipeline
+from paper_rag.log import configure_logging
+
+
+configure_logging()
 
 graph_path = os.getenv("PAPER_RAG_GRAPH")
 pipeline = None

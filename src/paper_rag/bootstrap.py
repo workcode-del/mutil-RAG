@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,9 @@ from paper_rag.retrieval import build_evidence_retriever
 from paper_rag.retrieval.ec_bfr import ECBFRConfig
 
 
+logger = logging.getLogger(__name__)
+
+
 def build_deployed_pipeline(
     graph_path: str | Path,
     config_path: str | Path = "configs/default.yaml",
@@ -27,6 +31,15 @@ def build_deployed_pipeline(
     retrieval_method: str = "ec_bfr",
     selection_top_k: int = 10,
 ) -> ScientificRAGPipeline:
+    logger.info(
+        "Loading pipeline: graph=%s candidate=%s retrieval=%s hgt=%s reranker=%s generator=%s",
+        graph_path,
+        candidate_backend,
+        retrieval_method,
+        bool(hgt_artifact_dir),
+        enable_reranker,
+        enable_generator,
+    )
     config = load_yaml(config_path)
     graph = load_graph(graph_path)
     normalized_candidate_backend = candidate_backend.strip().lower()
@@ -51,7 +64,7 @@ def build_deployed_pipeline(
     reranker = build_reranker(config) if enable_reranker else None
     generator = build_generator(config) if enable_generator else None
     vector_config = config["vector_store"]
-    return ScientificRAGPipeline(
+    pipeline = ScientificRAGPipeline(
         graph,
         embedder,
         store,
@@ -61,11 +74,14 @@ def build_deployed_pipeline(
         generator=generator,
         default_per_type_top_k=int(vector_config.get("per_type_top_k", 25)),
     )
+    logger.info("Pipeline ready: nodes=%d edges=%d", len(graph.nodes), len(graph.edges))
+    return pipeline
 
 
 def build_embedder(config: dict[str, Any]):
     embedding = config["embedding"]
     backend = str(embedding.get("backend", "qwen3_vl")).lower()
+    logger.info("Loading embedding module: backend=%s model=%s", backend, embedding.get("model"))
     if backend == "http":
         return HTTPEmbedder(embedding["service_url"], int(embedding["dimension"]))
     if backend not in {"qwen3_vl", "local"}:
@@ -92,6 +108,11 @@ def build_vector_store(config: dict[str, Any]) -> QdrantEvidenceStore:
     vector = config["vector_store"]
     embedding = config["embedding"]
     server = vector.get("mode", "local") == "server"
+    logger.info(
+        "Opening vector store: mode=%s collection=%s",
+        vector.get("mode", "local"),
+        vector["collection"],
+    )
     return QdrantEvidenceStore(
         collection=vector["collection"],
         dimension=int(embedding["dimension"]),
@@ -105,6 +126,7 @@ def build_reranker(config: dict[str, Any]):
     if not reranker.get("enabled", True):
         return None
     backend = str(reranker.get("backend", "qwen3_vl")).lower()
+    logger.info("Loading reranker module: backend=%s model=%s", backend, reranker.get("model"))
     if backend == "http":
         return HTTPReranker(reranker["service_url"])
     if backend not in {"qwen3_vl", "local"}:
@@ -125,6 +147,11 @@ def build_reranker(config: dict[str, Any]):
 
 def build_generator(config: dict[str, Any]) -> OpenAICompatibleGenerator:
     generation = config["generation"]
+    logger.info(
+        "Loading generation module: model=%s base_url=%s",
+        generation["model"],
+        generation["base_url"],
+    )
     return OpenAICompatibleGenerator(
         generation["base_url"],
         generation["model"],

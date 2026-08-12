@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 
 from paper_rag.api import create_app
 from paper_rag.bootstrap import build_deployed_pipeline
+from paper_rag.log import configure_logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,12 +27,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    configure_logging()
     try:
         import uvicorn
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("Install the unified dependency group before serving") from exc
 
     args = build_parser().parse_args()
+    logger.info("Starting API: graph=%s host=%s port=%d", args.graph, args.host, args.port)
     pipeline = build_deployed_pipeline(
         graph_path=args.graph,
         config_path=args.config,

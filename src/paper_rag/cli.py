@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 
 from paper_rag.chart import OpenAICompatibleChartExtractor, SelfEnsemblingChartExtractor
@@ -15,13 +16,18 @@ from paper_rag.evidence_graph import (
     save_graph,
 )
 from paper_rag.io import read_jsonl
+from paper_rag.log import configure_logging
 from paper_rag.model_source import resolve_model_reference
 from paper_rag.parsing import MinerUAdapter, locate_sentence_batch
 from paper_rag.training import build_query_pairs, embed_training_queries, train_hgt
 from paper_rag.workflow import build_corpus, index_graph
 
 
+logger = logging.getLogger(__name__)
+
+
 def _parse_mineru(args: argparse.Namespace) -> int:
+    logger.info("Parsing MinerU output: %s", args.input)
     parsed = MinerUAdapter().from_json(args.input, args.paper_id)
     located = {}
     if args.pdf:
@@ -141,6 +147,7 @@ def _download_models(args: argparse.Namespace) -> int:
 def _enrich_charts(args: argparse.Namespace) -> int:
     graph = load_graph(args.graph)
     entries = read_jsonl(args.manifest)
+    logger.info("Chart enrichment: figures=%d graph=%s", len(entries), args.graph)
     config = load_yaml(args.config)
     chart_config = config.get("chart", {})
     extractor = None
@@ -204,6 +211,7 @@ def _enrich_charts(args: argparse.Namespace) -> int:
 
     build_figure_text_views(graph)
     save_graph(graph, args.output)
+    logger.info("Chart enrichment complete: output=%s", args.output)
     summary = {"charts": reports, "output": str(Path(args.output).resolve())}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
@@ -358,6 +366,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    configure_logging()
     args = build_parser().parse_args()
     raise SystemExit(args.handler(args))
 

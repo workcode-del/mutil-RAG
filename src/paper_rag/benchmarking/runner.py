@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,9 @@ from paper_rag.models.cached_scorer import CachedHGTScorer
 from paper_rag.retrieval import build_evidence_retriever
 from paper_rag.training import build_query_pairs, embed_training_queries, train_hgt
 from paper_rag.workflow import index_graph
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +73,13 @@ def run_benchmark(
         ensure_dense_index(layout, config_path, force=reindex)
 
     samples = load_samples(sample_path)
+    logger.info(
+        "Benchmark start: dataset=%s split=%s samples=%d systems=%d",
+        layout.name,
+        split,
+        len(samples),
+        len(systems),
+    )
     config = load_yaml(config_path)
     retriever_config = build_retriever_config(config)
     report_paths: list[Path] = []
@@ -93,6 +104,15 @@ def run_benchmark(
                     pipeline.graph,
                     retriever_config,
                     selection_top_k=selection_top_k,
+                )
+                logger.info(
+                    "Benchmark system: dataset=%s system=%s backend=%s retrieval=%s reranker=%s hgt=%s",
+                    layout.name,
+                    name,
+                    backend,
+                    system.retrieval_method,
+                    reranker_enabled,
+                    system.hgt,
                 )
                 pipeline.graph_scorer = (
                     CachedHGTScorer(hgt_artifacts) if system.hgt else None
@@ -123,6 +143,7 @@ def run_benchmark(
                 save_report(report, target)
                 report_paths.append(target)
                 summaries[name] = report["summary"]
+                logger.info("Benchmark system complete: %s report=%s", name, target)
         finally:
             _close_pipeline(pipeline)
 
@@ -140,6 +161,7 @@ def run_benchmark(
         "summaries": summaries,
     }
     write_json(layout.reports / f"{split}_summary.json", summary)
+    logger.info("Benchmark complete: dataset=%s comparison=%s", layout.name, comparison)
     return summary
 
 
@@ -156,6 +178,7 @@ def train_benchmark_index(
     device: str = "cuda",
     reindex: bool = False,
 ) -> dict[str, Any]:
+    logger.info("Benchmark HGT training start: dataset=%s", layout.name)
     ensure_dense_index(layout, config_path, force=reindex)
     work = layout.processed / "training"
     pairs = build_query_pairs(
@@ -188,6 +211,7 @@ def train_benchmark_index(
         heads=int(graph_config.get("heads", 4)),
     )
     metadata = json.loads((artifacts / "training.json").read_text(encoding="utf-8"))
+    logger.info("Benchmark HGT training complete: dataset=%s output=%s", layout.name, artifacts)
     return {"dataset": layout.name, "artifacts": str(artifacts.resolve()), **metadata}
 
 
@@ -207,8 +231,10 @@ def ensure_dense_index(
     if marker.exists() and local_index_exists and not force:
         state = json.loads(marker.read_text(encoding="utf-8"))
         if state.get("graph_sha256") == graph_digest:
+            logger.info("Using cached dense index: dataset=%s", layout.name)
             return marker
 
+    logger.info("Building dense index: dataset=%s", layout.name)
     report = index_graph(
         layout.graph,
         config_path,

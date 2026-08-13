@@ -148,14 +148,10 @@ def _sample(row: dict[str, Any], split: str) -> dict[str, Any]:
 
 def _quote_node_id(split: str, row: dict[str, Any], quote: dict[str, Any]) -> str:
     modality = str(quote.get("type") or ("image" if quote.get("img_path") else "text"))
-    page = quote.get("page_id")
-    layout = quote.get("layout_id")
-    location = (
-        f"{page}:{layout}"
-        if layout is not None
-        else f"q{row['q_id']}:{quote['quote_id']}"
+    return (
+        f"mmdocrag::{split}::{row['doc_name']}::{modality}:"
+        f"q{row['q_id']}:{quote['quote_id']}"
     )
-    return f"mmdocrag::{split}::{row['doc_name']}::{modality}:{location}"
 
 
 def _file_lookup(root: Path, suffixes: set[str]) -> dict[str, Path]:

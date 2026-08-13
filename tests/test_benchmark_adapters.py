@@ -64,7 +64,7 @@ def test_mmdocrag_split_namespaces_prevent_qid_collisions() -> None:
     assert all(node_id.startswith("mmdocrag::test::") for node_id in sample["candidate_node_ids"])
 
 
-def test_mmdocrag_reuses_document_layout_nodes() -> None:
+def test_mmdocrag_keeps_question_local_quotes_distinct() -> None:
     first = {
         "q_id": 1,
         "doc_name": "document",
@@ -77,13 +77,13 @@ def test_mmdocrag_reuses_document_layout_nodes() -> None:
     }
     second = {**first, "q_id": 2, "question": "Second?", "gold_quotes": ["text7"]}
     second["text_quotes"] = [
-        {"quote_id": "text7", "text": "Shared", "page_id": 1, "layout_id": 2}
+        {"quote_id": "text7", "text": "Different view", "page_id": 1, "layout_id": 2}
     ]
 
     graph, _ = _build_quote_graph([("development", first), ("development", second)], {})
 
-    assert len(graph.nodes) == 1
-    assert _sample(first, "development")["candidate_node_ids"] == _sample(
+    assert len(graph.nodes) == 2
+    assert _sample(first, "development")["candidate_node_ids"] != _sample(
         second, "development"
     )["candidate_node_ids"]
 

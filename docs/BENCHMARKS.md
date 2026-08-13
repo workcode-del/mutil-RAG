@@ -81,7 +81,7 @@ paper-rag benchmark all --datasets peerqa \
 
 - 从官方 Hugging Face 仓库下载 `dev_<setting>.jsonl`、`evaluation_<setting>.jsonl` 和 `images.zip`；
 - 默认 `setting=20`，即每个问题在官方 20 个 text/image quote 中选择证据；
-- quote 转为 `Sentence` 或 `Figure`，相同文档位置复用节点；
+- quote 转为 `Sentence` 或 `Figure`，以问题内候选 `quote_id` 建立节点；
 - `gold_quotes` 转为 gold node ID，`candidate_node_ids` 限制 BM25 和 Dense 使用完全相同的候选；
 - `dev_20` 按文档划为内部 train/dev，`evaluation_20` 作为 test；
 - `--split official` 等同于 test。

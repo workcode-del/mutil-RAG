@@ -53,11 +53,9 @@ def _add_dataset_options(parser: argparse.ArgumentParser) -> None:
 def _add_prepare_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--setting", type=int, choices=(15, 20), default=20)
     parser.add_argument(
-        "--peerqa-skip-pdfs",
-        "--skip-pdfs",
-        dest="peerqa_skip_pdfs",
+        "--peerqa-download-pdfs",
         action="store_true",
-        help="Evaluate only PeerQA papers present in the official text archive",
+        help="Extend PeerQA with OpenReview PDFs; the official subset needs no PDFs",
     )
     parser.add_argument(
         "--mmdocrag-download-pdfs",
@@ -102,7 +100,7 @@ def _add_train_options(parser: argparse.ArgumentParser, *, optional: bool = Fals
 
 def _handle_prepare(args: argparse.Namespace) -> int:
     reports = _prepare(args)
-    print(json.dumps(reports, ensure_ascii=False, indent=2))
+    print(json.dumps(_report_summaries(reports), ensure_ascii=False, indent=2))
     return 0
 
 
@@ -120,7 +118,7 @@ def _handle_train(args: argparse.Namespace) -> int:
 
 def _handle_all(args: argparse.Namespace) -> int:
     prepared = _prepare(args)
-    print(json.dumps(prepared, ensure_ascii=False, indent=2))
+    print(json.dumps(_report_summaries(prepared), ensure_ascii=False, indent=2))
     if args.train_hgt:
         print(json.dumps(_train(args), ensure_ascii=False, indent=2))
         args.systems = list(dict.fromkeys([*args.systems, "full"]))
@@ -141,7 +139,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, dict]:
             reports[dataset] = prepare_peerqa(
                 layout,
                 force=args.force,
-                download_pdfs=not args.peerqa_skip_pdfs,
+                download_pdfs=args.peerqa_download_pdfs,
                 run_mineru=not args.skip_mineru,
                 workers=args.workers,
                 mineru_command=args.mineru_command,
@@ -202,3 +200,14 @@ def _dataset_artifacts(root: str | None, dataset: str) -> str | None:
     path = Path(root)
     direct = (path / "query_projector.pt").exists() or path.name == dataset
     return str(path if direct else path / dataset)
+
+
+def _report_summaries(reports: dict[str, dict]) -> dict[str, dict]:
+    details = {"missing_papers", "missing_images", "download_errors", "parse_errors"}
+    return {
+        dataset: {
+            **{key: value for key, value in report.items() if key not in details},
+            **{f"{key}_count": len(report.get(key, ())) for key in details},
+        }
+        for dataset, report in reports.items()
+    }

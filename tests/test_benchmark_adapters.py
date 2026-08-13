@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from paper_rag.benchmarking.base import BenchmarkLayout, grouped_split, write_json
+from paper_rag.benchmarking.cli import _report_summaries
 from paper_rag.benchmarking.mmdocrag import _build_quote_graph, _sample, _string_list
 from paper_rag.benchmarking.peerqa import _build_official_graph
 from paper_rag.benchmarking.runner import _validate_preparation
@@ -140,7 +141,49 @@ def test_peerqa_redistributable_scope_allows_licensed_subset(tmp_path) -> None:
         {
             "evaluation_scope": "official_redistributable_papers",
             "missing_papers": ["openreview/paper"],
+            "download_errors": {"openreview/paper": "HTTP 403"},
+            "parse_errors": {"openreview/paper": "MinerU failed"},
         },
     )
 
     _validate_preparation(layout)
+
+
+def test_peerqa_complete_scope_rejects_missing_inputs(tmp_path) -> None:
+    layout = BenchmarkLayout.create("peerqa", tmp_path)
+    write_json(
+        layout.processed / "prepare_report.json",
+        {
+            "evaluation_scope": "official_all_papers",
+            "missing_papers": ["openreview/paper"],
+        },
+    )
+
+    try:
+        _validate_preparation(layout)
+    except RuntimeError as error:
+        assert "missing_papers" in str(error)
+    else:
+        raise AssertionError("Incomplete full PeerQA preparation was accepted")
+
+
+def test_prepare_console_report_summarizes_details() -> None:
+    summary = _report_summaries(
+        {
+            "peerqa": {
+                "dataset": "peerqa",
+                "nodes": 10,
+                "missing_papers": ["a", "b"],
+                "download_errors": {"a": "403"},
+            }
+        }
+    )["peerqa"]
+
+    assert summary == {
+        "dataset": "peerqa",
+        "nodes": 10,
+        "missing_papers_count": 2,
+        "missing_images_count": 0,
+        "download_errors_count": 1,
+        "parse_errors_count": 0,
+    }

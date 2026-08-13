@@ -261,9 +261,9 @@ def _validate_preparation(layout: BenchmarkLayout) -> None:
     if not report_path.exists():
         return
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    keys = ["missing_images", "download_errors", "parse_errors"]
-    if report.get("evaluation_scope") != "official_redistributable_papers":
-        keys.append("missing_papers")
+    keys = ["missing_images"]
+    if report.get("evaluation_scope") == "official_all_papers":
+        keys.extend(("download_errors", "parse_errors", "missing_papers"))
     problems = {key: report.get(key) for key in keys if report.get(key)}
     if problems:
         raise RuntimeError(

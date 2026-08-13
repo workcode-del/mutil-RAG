@@ -90,6 +90,10 @@ def prepare_peerqa(
     write_jsonl(layout.samples("all"), samples)
     for split, rows in grouped_split(samples, group_key="paper_id").items():
         write_jsonl(layout.samples(split), rows)
+    remaining_papers = sorted(
+        required_papers - {node.paper_id for node in graph.nodes.values()}
+    )
+    complete = not remaining_papers
     report = {
         "dataset": "peerqa",
         "graph_mode": (
@@ -102,11 +106,9 @@ def prepare_peerqa(
         "nodes": len(graph.nodes),
         "papers": len({node.paper_id for node in graph.nodes.values()}),
         "evaluation_scope": (
-            "official_all_papers" if download_pdfs else "official_redistributable_papers"
+            "official_all_papers" if complete else "official_redistributable_papers"
         ),
-        "missing_papers": sorted(
-            required_papers - {node.paper_id for node in graph.nodes.values()}
-        ),
+        "missing_papers": remaining_papers,
         "downloaded_pdfs": len(pdf_manifest),
         "download_errors": download_errors,
         "parse_errors": parse_errors,

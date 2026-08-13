@@ -64,18 +64,17 @@ HGT 产物默认写入 `outputs/benchmark_hgt/<dataset>`。运行时检查图哈
 
 - 从 PeerQA 官方 Hugging Face 仓库下载固定版本的 `qa.jsonl` 和 `papers.jsonl`；
 - 直接使用 `papers.jsonl` 中的官方句子和 `idx` 构图；
-- 缺失正文的 OpenReview 论文默认批量下载 PDF，并用 MinerU 补入同一张图；
+- 默认评测官方可再分发文本子集；`--peerqa-download-pdfs` 可尝试下载 OpenReview PDF，并用 MinerU 扩展图；
 - 按 `paper_id` 稳定划分 train/dev/test；
 - `--split official` 使用全部成功映射的问题。
 
-正式运行会检查下载、解析和缺失论文。只做官方可再分发文本子集的诊断可使用：
+官方可再分发文本子集不依赖额外 PDF，直接运行统一命令即可。扩展实验使用：
 
 ```bash
-paper-rag benchmark all --datasets peerqa \
-  --peerqa-skip-pdfs --skip-mineru
+paper-rag benchmark all --datasets peerqa --peerqa-download-pdfs
 ```
 
-这个子集口径不能与完整 PeerQA 主实验混写。`--allow-partial` 只用于排错。
+扩展结果应单独报告成功下载和解析的论文范围。`--allow-partial` 只用于排错。
 
 ### MMDocRAG
 

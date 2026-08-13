@@ -97,25 +97,15 @@ def _build_quote_graph(
     graph = EvidenceGraph()
     missing_images: set[str] = set()
     for split, row in rows:
-        for quote in row.get("text_quotes", []):
-            graph.add_node(
-                _quote_node(
-                    split,
-                    row,
-                    quote,
-                    NodeType.SENTENCE,
-                    text=str(quote.get("text", "")),
+        for quote in _candidate_quotes(row):
+            if quote.get("img_path"):
+                raw_path = str(quote["img_path"])
+                resolved = image_lookup.get(Path(raw_path).as_posix()) or image_lookup.get(
+                    Path(raw_path).name
                 )
-            )
-        for quote in row.get("img_quotes", []):
-            raw_path = str(quote.get("img_path", ""))
-            resolved = image_lookup.get(Path(raw_path).as_posix()) or image_lookup.get(
-                Path(raw_path).name
-            )
-            if resolved is None:
-                missing_images.add(raw_path)
-            graph.add_node(
-                _quote_node(
+                if resolved is None:
+                    missing_images.add(raw_path)
+                node = _quote_node(
                     split,
                     row,
                     quote,
@@ -123,13 +113,21 @@ def _build_quote_graph(
                     image_path=str(resolved or raw_path),
                     text_view=str(quote.get("img_description", "")),
                 )
-            )
+            else:
+                node = _quote_node(
+                    split,
+                    row,
+                    quote,
+                    NodeType.SENTENCE,
+                    text=str(quote.get("text", "")),
+                )
+            graph.add_node(node)
     return graph, missing_images
 
 
 def _sample(row: dict[str, Any], split: str) -> dict[str, Any]:
     qid = str(row["q_id"])
-    quotes = [*row.get("text_quotes", []), *row.get("img_quotes", [])]
+    quotes = _candidate_quotes(row)
     quote_ids = {
         str(quote["quote_id"]): _quote_node_id(split, row, quote) for quote in quotes
     }
@@ -144,6 +142,13 @@ def _sample(row: dict[str, Any], split: str) -> dict[str, Any]:
         "required_modalities": _string_list(modalities),
         "question_type": row.get("question_type"),
     }
+
+
+def _candidate_quotes(row: dict[str, Any]) -> list[dict[str, Any]]:
+    unique: dict[str, dict[str, Any]] = {}
+    for quote in [*row.get("text_quotes", []), *row.get("img_quotes", [])]:
+        unique.setdefault(str(quote["quote_id"]), quote)
+    return list(unique.values())
 
 
 def _quote_node_id(split: str, row: dict[str, Any], quote: dict[str, Any]) -> str:

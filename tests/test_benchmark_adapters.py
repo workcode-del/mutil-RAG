@@ -88,6 +88,27 @@ def test_mmdocrag_keeps_question_local_quotes_distinct() -> None:
     )["candidate_node_ids"]
 
 
+def test_mmdocrag_deduplicates_question_local_quote_ids() -> None:
+    row = {
+        "q_id": 486,
+        "doc_name": "document",
+        "question": "Question?",
+        "text_quotes": [
+            {"quote_id": "text11", "text": "Shared", "page_id": 10, "layout_id": 32},
+            {"quote_id": "text11", "text": "Shared", "page_id": 9, "layout_id": 32},
+        ],
+        "img_quotes": [],
+        "gold_quotes": ["text11"],
+    }
+
+    graph, _ = _build_quote_graph([("development", row)], {})
+    sample = _sample(row, "development")
+
+    assert len(graph.nodes) == 1
+    assert len(sample["candidate_node_ids"]) == 1
+    assert sample["relevant_node_ids"] == sample["candidate_node_ids"]
+
+
 def test_grouped_split_keeps_documents_together() -> None:
     rows = [
         {"paper_id": paper_id, "query_id": f"{paper_id}-{index}"}

@@ -108,6 +108,8 @@ def build_vector_store(config: dict[str, Any]) -> QdrantEvidenceStore:
     vector = config["vector_store"]
     embedding = config["embedding"]
     server = vector.get("mode", "local") == "server"
+    upload_batch_size = int(vector.get("upload_batch_size", 256 if server else 4096))
+    upload_parallel = int(vector.get("upload_parallel", 4 if server else 1))
     logger.info(
         "Opening vector store: mode=%s collection=%s",
         vector.get("mode", "local"),
@@ -118,6 +120,9 @@ def build_vector_store(config: dict[str, Any]) -> QdrantEvidenceStore:
         dimension=int(embedding["dimension"]),
         path=None if server else vector["path"],
         url=vector.get("url", "http://127.0.0.1:6333") if server else None,
+        upload_batch_size=upload_batch_size,
+        upload_parallel=upload_parallel,
+        prefer_grpc=bool(vector.get("prefer_grpc", False)),
     )
 
 

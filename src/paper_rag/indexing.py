@@ -21,17 +21,25 @@ class IndexingReport:
 
 
 def compute_base_embeddings(
-    graph: EvidenceGraph, embedder: Embedder, batch_size: int = 16
+    graph: EvidenceGraph,
+    embedder: Embedder,
+    batch_size: int = 16,
+    image_batch_size: int | None = None,
 ) -> tuple[dict[str, np.ndarray], IndexingReport]:
     build_figure_text_views(graph)
     texts = [node for node in graph.nodes.values() if node.node_type is not NodeType.FIGURE]
     figures = [node for node in graph.nodes.values() if node.node_type is NodeType.FIGURE]
     result: dict[str, np.ndarray] = {}
+    image_batch_size = image_batch_size or batch_size
     logger.info(
-        "Embedding nodes: text=%d figures=%d batch_size=%d", len(texts), len(figures), batch_size
+        "Embedding nodes: text=%d figures=%d text_batch=%d image_batch=%d",
+        len(texts),
+        len(figures),
+        batch_size,
+        image_batch_size,
     )
     _embed_batches(texts, batch_size, embedder.embed_texts, result, "text")
-    _embed_batches(figures, batch_size, embedder.embed_images, result, "figure")
+    _embed_batches(figures, image_batch_size, embedder.embed_images, result, "figure")
     return result, IndexingReport(len(texts), len(figures), embedder.dimension)
 
 
@@ -50,7 +58,7 @@ def _embed_batches(nodes, batch_size, encode, result, label: str) -> None:
 
 
 def upsert_base_embeddings(
-    store, graph: EvidenceGraph, embeddings: dict[str, np.ndarray], batch_size: int = 512
+    store, graph: EvidenceGraph, embeddings: dict[str, np.ndarray], batch_size: int = 4096
 ) -> None:
     items = list(embeddings.items())
     if not items:

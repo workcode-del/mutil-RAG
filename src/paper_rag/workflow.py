@@ -9,6 +9,7 @@ import numpy as np
 
 from paper_rag.bootstrap import build_embedder, build_vector_store
 from paper_rag.config import load_yaml
+from paper_rag.domain import NodeType
 from paper_rag.evidence_graph import EvidenceGraph, load_graph, save_graph
 from paper_rag.indexing import IndexingReport, compute_base_embeddings, upsert_base_embeddings
 from paper_rag.parsing import MinerUAdapter
@@ -68,12 +69,24 @@ def index_graph(
     graph = load_graph(graph_path)
     logger.info("Vector index: nodes=%d graph=%s", len(graph.nodes), graph_path)
     store = build_vector_store(config)
-    embeddings, report = compute_base_embeddings(graph, build_embedder(config))
     target = Path(embedding_cache)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("Saving embedding cache: vectors=%d path=%s", len(embeddings), target)
-    np.savez_compressed(target, **embeddings)
-    logger.info("Embedding cache ready: path=%s", target)
+    embeddings = _load_embedding_cache(target, graph, int(config["embedding"]["dimension"]))
+    if embeddings is None:
+        embedding_config = config["embedding"]
+        embeddings, report = compute_base_embeddings(
+            graph,
+            build_embedder(config),
+            batch_size=int(embedding_config.get("text_batch_size", 16)),
+            image_batch_size=int(embedding_config.get("image_batch_size", 8)),
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        logger.info("Saving embedding cache: vectors=%d path=%s", len(embeddings), target)
+        np.savez_compressed(target, **embeddings)
+        logger.info("Embedding cache ready: path=%s", target)
+    else:
+        figures = sum(node.node_type is NodeType.FIGURE for node in graph.nodes.values())
+        report = IndexingReport(len(graph.nodes) - figures, figures, int(config["embedding"]["dimension"]))
+        logger.info("Using embedding cache: vectors=%d path=%s", len(embeddings), target)
     upsert_base_embeddings(store, graph, embeddings)
     if hasattr(store.client, "close"):
         store.client.close()
@@ -85,6 +98,20 @@ def index_graph(
         target,
     )
     return report
+
+
+def _load_embedding_cache(
+    path: Path, graph: EvidenceGraph, dimension: int
+) -> dict[str, np.ndarray] | None:
+    if not path.exists():
+        return None
+    with np.load(path) as archive:
+        if set(archive.files) != set(graph.nodes):
+            return None
+        embeddings = {node_id: archive[node_id] for node_id in archive.files}
+    if any(vector.shape != (dimension,) for vector in embeddings.values()):
+        return None
+    return embeddings
 
 
 def build_corpus(

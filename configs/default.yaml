@@ -45,6 +45,8 @@ embedding:
   local_path:
   dimension: 2048
   normalize: true
+  text_batch_size: 64
+  image_batch_size: 8
   query_instruction: Retrieve scientific evidence that answers the question.
 
 vector_store:
@@ -54,6 +56,8 @@ vector_store:
   collection: scientific_evidence
   distance: cosine
   per_type_top_k: 25
+  upload_batch_size: 4096
+  upload_parallel: 1
 
 graph_index:
   hidden_dimension: 256

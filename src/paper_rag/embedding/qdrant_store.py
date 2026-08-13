@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -15,6 +16,9 @@ class QdrantEvidenceStore:
         dimension: int = 2048,
         path: str | Path | None = "data/index/qdrant",
         url: str | None = None,
+        upload_batch_size: int = 4096,
+        upload_parallel: int = 1,
+        prefer_grpc: bool = False,
     ) -> None:
         try:
             from qdrant_client import QdrantClient, models
@@ -23,9 +27,15 @@ class QdrantEvidenceStore:
         if bool(path) == bool(url):
             raise ValueError("Provide exactly one of path or url")
         self.models = models
-        self.client = QdrantClient(url=url) if url else QdrantClient(path=str(path))
+        self.client = (
+            QdrantClient(url=url, prefer_grpc=prefer_grpc)
+            if url
+            else QdrantClient(path=str(path))
+        )
         self.collection = collection
         self.dimension = dimension
+        self.upload_batch_size = upload_batch_size
+        self.upload_parallel = upload_parallel
 
     def ensure_collection(self) -> None:
         models = self.models
@@ -43,24 +53,23 @@ class QdrantEvidenceStore:
             raise ValueError(
                 f"Expected vectors shape {(len(nodes), self.dimension)}, got {vectors.shape}"
             )
-        points = []
-        for node, vector in zip(nodes, vectors, strict=True):
-            import uuid
-
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, node.node_id))
-            points.append(
-                self.models.PointStruct(
-                    id=point_id,
-                    vector=vector.astype(float).tolist(),
-                    payload={
-                        "node_id": node.node_id,
-                        "paper_id": node.paper_id,
-                        "node_type": node.node_type.value,
-                        "page": node.page,
-                    },
-                )
-            )
-        self.client.upsert(collection_name=self.collection, points=points, wait=True)
+        self.client.upload_collection(
+            collection_name=self.collection,
+            vectors=vectors,
+            ids=[str(uuid.uuid5(uuid.NAMESPACE_URL, node.node_id)) for node in nodes],
+            payload=[
+                {
+                    "node_id": node.node_id,
+                    "paper_id": node.paper_id,
+                    "node_type": node.node_type.value,
+                    "page": node.page,
+                }
+                for node in nodes
+            ],
+            batch_size=self.upload_batch_size,
+            parallel=self.upload_parallel,
+            wait=True,
+        )
 
     def search(
         self,

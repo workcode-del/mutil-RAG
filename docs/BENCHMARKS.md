@@ -62,7 +62,7 @@ HGT 产物默认写入 `outputs/benchmark_hgt/<dataset>`。运行时检查图哈
 
 ### PeerQA
 
-- 从 TU DataLib 官方 DSpace bitstream API 下载标注包；
+- 从 PeerQA 官方 Hugging Face 仓库下载固定版本的 `qa.jsonl` 和 `papers.jsonl`；
 - 直接使用 `papers.jsonl` 中的官方句子和 `idx` 构图；
 - 缺失正文的 OpenReview 论文默认批量下载 PDF，并用 MinerU 补入同一张图；
 - 按 `paper_id` 稳定划分 train/dev/test；

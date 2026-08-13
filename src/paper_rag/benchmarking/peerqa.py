@@ -15,7 +15,7 @@ from paper_rag.benchmarking.base import (
     write_json,
     write_jsonl,
 )
-from paper_rag.benchmarking.download import download_file, extract_zip
+from paper_rag.benchmarking.download import download_file
 from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
 from paper_rag.evaluation.evidence_mapping import map_evidence
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
@@ -25,9 +25,9 @@ from paper_rag.parsing import MinerUAdapter
 logger = logging.getLogger(__name__)
 
 
-PEERQA_ARCHIVE = (
-    "https://tudatalib.ulb.tu-darmstadt.de/server/api/core/bitstreams/"
-    "b7d21b66-d7eb-4828-8226-4fc2e87ce994/content"
+PEERQA_DATA = (
+    "https://huggingface.co/datasets/UKPLab/PeerQA/resolve/"
+    "f872154fec9e56f525affa4cbafdc5143e1c3f00"
 )
 
 
@@ -41,14 +41,13 @@ def prepare_peerqa(
     mineru_command: str = "mineru",
 ) -> dict[str, Any]:
     logger.info("Preparing PeerQA: root=%s", layout.root)
-    archive = download_file(
-        PEERQA_ARCHIVE,
-        layout.raw / "peerqa-data-v1.0.zip",
-        force=force,
+    data_root = layout.raw / "dataset"
+    qa_path = download_file(
+        f"{PEERQA_DATA}/qa.jsonl", data_root / "qa.jsonl", force=force
     )
-    data_root = extract_zip(archive, layout.raw / "dataset", force=force)
-    qa_path = _find_one(data_root, "qa.jsonl")
-    papers_path = _find_one(data_root, "papers.jsonl")
+    papers_path = download_file(
+        f"{PEERQA_DATA}/papers.jsonl", data_root / "papers.jsonl", force=force
+    )
     qa_rows = read_jsonl(qa_path)
     graph = _build_official_graph(read_jsonl(papers_path))
     available_papers = {node.paper_id for node in graph.nodes.values()}

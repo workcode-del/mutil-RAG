@@ -27,3 +27,12 @@ def test_pdf_validation_checks_file_signature(tmp_path) -> None:
 
     pdf.write_bytes(b"%PDF-1.7\n")
     assert _valid_download(pdf)
+
+
+def test_jsonl_validation_rejects_html(tmp_path) -> None:
+    data = tmp_path / "qa.jsonl"
+    data.write_text("<html>access denied</html>", encoding="utf-8")
+    assert not _valid_download(data)
+
+    data.write_text('{"question": "why?"}\n', encoding="utf-8")
+    assert _valid_download(data)

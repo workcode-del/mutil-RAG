@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import urllib.request
@@ -88,4 +89,11 @@ def _valid_download(path: Path) -> bool:
     if suffix == ".pdf":
         with path.open("rb") as stream:
             return stream.read(5) == b"%PDF-"
+    if suffix == ".jsonl":
+        try:
+            with path.open(encoding="utf-8") as stream:
+                first = next(line for line in stream if line.strip())
+                return isinstance(json.loads(first), dict)
+        except (OSError, StopIteration, UnicodeDecodeError, json.JSONDecodeError):
+            return False
     return True

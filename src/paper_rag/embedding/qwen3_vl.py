@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import sys
+import time
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Sequence
@@ -8,6 +10,9 @@ from typing import Sequence
 import numpy as np
 
 from paper_rag.model_source import resolve_model_reference
+
+
+logger = logging.getLogger(__name__)
 
 
 class Qwen3VLEmbedder:
@@ -44,6 +49,8 @@ class Qwen3VLEmbedder:
                 "Clone https://github.com/QwenLM/Qwen3-VL-Embedding and set "
                 "QWEN3_VL_RETRIEVAL_REPO to that directory"
             ) from exc
+        if device.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError("embedding.device=cuda but PyTorch cannot access a CUDA GPU")
 
         self.dimension = dimension
         self.query_instruction = query_instruction
@@ -54,14 +61,28 @@ class Qwen3VLEmbedder:
             source=model_source,
             cache_dir=model_cache_dir,
         )
+        actual_device = torch.cuda.get_device_name() if device.startswith("cuda") else "cpu"
+        logger.info(
+            "Embedding model files ready: path=%s device=%s (%s)",
+            resolved_model,
+            device,
+            actual_device,
+        )
         kwargs = {
             "model_name_or_path": resolved_model,
             "max_length": max_length,
-            "torch_dtype": torch.bfloat16 if device.startswith("cuda") else torch.float32,
+            "dtype": torch.bfloat16 if device.startswith("cuda") else torch.float32,
         }
         if device.startswith("cuda") and find_spec("flash_attn") is not None:
             kwargs["attn_implementation"] = "flash_attention_2"
+        started = time.monotonic()
         self.model = OfficialEmbedder(**kwargs)
+        model_device = getattr(getattr(self.model, "model", None), "device", device)
+        logger.info(
+            "Embedding model ready: device=%s load_seconds=%.1f",
+            model_device,
+            time.monotonic() - started,
+        )
 
     def embed_queries(self, texts: Sequence[str]) -> np.ndarray:
         items = [{"text": text, "instruction": self.query_instruction} for text in texts]

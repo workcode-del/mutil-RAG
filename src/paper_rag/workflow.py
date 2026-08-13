@@ -71,7 +71,9 @@ def index_graph(
     embeddings, report = compute_base_embeddings(graph, build_embedder(config))
     target = Path(embedding_cache)
     target.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Saving embedding cache: vectors=%d path=%s", len(embeddings), target)
     np.savez_compressed(target, **embeddings)
+    logger.info("Embedding cache ready: path=%s", target)
     upsert_base_embeddings(store, graph, embeddings)
     if hasattr(store.client, "close"):
         store.client.close()

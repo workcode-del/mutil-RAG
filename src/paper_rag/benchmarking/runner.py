@@ -15,6 +15,8 @@ from paper_rag.bootstrap import build_deployed_pipeline, build_retriever_config
 from paper_rag.config import load_yaml
 from paper_rag.evaluation import evaluate, load_samples, save_report
 from paper_rag.evaluation.comparison import save_comparison
+from paper_rag.embedding import ExactEmbeddingStore
+from paper_rag.evidence_graph import load_graph
 from paper_rag.models.cached_scorer import CachedHGTScorer
 from paper_rag.retrieval import build_evidence_retriever
 from paper_rag.training import build_query_pairs, embed_training_queries, train_hgt
@@ -76,6 +78,13 @@ def run_benchmark(
     selected = [SYSTEMS[name] for name in systems]
     if any(system.candidate_backend == "embedding" for system in selected):
         ensure_dense_index(layout, config_path, force=reindex)
+        logger.info("Loading exact benchmark embedding store: dataset=%s", layout.name)
+        dense_store = ExactEmbeddingStore.from_npz(
+            load_graph(layout.graph), layout.processed / "base_embeddings.npz"
+        )
+        logger.info("Exact benchmark embedding store ready: nodes=%d", len(dense_store.nodes))
+    else:
+        dense_store = None
 
     samples = load_samples(sample_path)
     logger.info(
@@ -102,6 +111,7 @@ def run_benchmark(
             candidate_backend=backend,
             retrieval_method="top_k",
             selection_top_k=selection_top_k,
+            candidate_store=dense_store if backend == "embedding" else None,
         )
         try:
             if pipeline.embedder and query_vectors is None:
@@ -134,6 +144,7 @@ def run_benchmark(
                     "split": split,
                     "system": name,
                     "candidate_backend": backend,
+                    "dense_search_backend": "numpy_exact" if backend == "embedding" else None,
                     "retrieval_method": system.retrieval_method,
                     "reranker": reranker_enabled,
                     "hgt": system.hgt,

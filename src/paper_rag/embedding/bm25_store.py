@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 
 import numpy as np
@@ -33,6 +33,14 @@ class BM25EvidenceStore:
         self.term_frequencies = {
             node_id: Counter(tokens) for node_id, tokens in self.tokens.items()
         }
+        grouped: dict[tuple[str, NodeType], list[str]] = defaultdict(list)
+        by_type: dict[NodeType, list[str]] = defaultdict(list)
+        for node_id in self.tokens:
+            node = graph.nodes[node_id]
+            grouped[(node.paper_id, node.node_type)].append(node_id)
+            by_type[node.node_type].append(node_id)
+        self.by_paper_type = dict(grouped)
+        self.by_type = dict(by_type)
 
     def search(
         self,
@@ -46,13 +54,22 @@ class BM25EvidenceStore:
         query_terms = Counter(tokenize(query))
         hits: list[SearchHit] = []
         for node_type in node_types:
-            candidate_ids = [
-                node_id
-                for node_id in self.tokens
-                if self.graph.nodes[node_id].node_type is node_type
-                and (not paper_ids or self.graph.nodes[node_id].paper_id in paper_ids)
-                and (not candidate_node_ids or node_id in candidate_node_ids)
-            ]
+            if candidate_node_ids:
+                candidate_ids = [
+                    node_id
+                    for node_id in sorted(candidate_node_ids)
+                    if node_id in self.tokens
+                    and self.graph.nodes[node_id].node_type is node_type
+                    and (not paper_ids or self.graph.nodes[node_id].paper_id in paper_ids)
+                ]
+            elif paper_ids:
+                candidate_ids = [
+                    node_id
+                    for paper_id in sorted(paper_ids)
+                    for node_id in self.by_paper_type.get((paper_id, node_type), ())
+                ]
+            else:
+                candidate_ids = self.by_type.get(node_type, [])
             if not candidate_ids:
                 continue
             average_length = sum(len(self.tokens[node_id]) for node_id in candidate_ids) / len(

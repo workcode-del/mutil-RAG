@@ -33,6 +33,7 @@ def save_comparison(
     fields = [
         "run",
         "candidate_backend",
+        "dense_search_backend",
         "retrieval_method",
         "reranker",
         "hgt",
@@ -55,6 +56,7 @@ def _report_row(path: Path, metrics: tuple[str, ...]) -> dict[str, Any]:
     return {
         "run": path.stem,
         "candidate_backend": metadata.get("candidate_backend", ""),
+        "dense_search_backend": metadata.get("dense_search_backend", ""),
         "retrieval_method": metadata.get("retrieval_method", ""),
         "reranker": metadata.get("reranker", ""),
         "hgt": metadata.get("hgt", ""),

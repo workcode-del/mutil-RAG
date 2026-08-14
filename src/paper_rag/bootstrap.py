@@ -30,6 +30,7 @@ def build_deployed_pipeline(
     candidate_backend: str = "embedding",
     retrieval_method: str = "ec_bfr",
     selection_top_k: int = 10,
+    candidate_store: Any | None = None,
 ) -> ScientificRAGPipeline:
     logger.info(
         "Loading pipeline: graph=%s candidate=%s retrieval=%s hgt=%s reranker=%s generator=%s",
@@ -50,7 +51,7 @@ def build_deployed_pipeline(
         store = BM25EvidenceStore(graph)
     elif normalized_candidate_backend == "embedding":
         embedder = build_embedder(config)
-        store = build_vector_store(config)
+        store = candidate_store if candidate_store is not None else build_vector_store(config)
     else:
         raise ValueError("candidate_backend must be one of: embedding, bm25")
     retriever_config = build_retriever_config(config)

@@ -32,6 +32,7 @@ paper-rag benchmark all \
 `all` 会依次下载和转换数据、建立 Dense 索引、可选训练 HGT、运行系统矩阵并生成 JSON 报告和 `comparison.csv`。已有下载、解压和 MinerU 结果会复用；`--force` 重做数据准备，`--reindex` 重建向量索引。
 
 评测 query 默认按 `--query-batch-size 64` 批量编码，并在使用同一 embedding 模型的系统间复用。排名与指标仍逐样本计算；报告记录批量/单条编码的最小余弦一致性，低于 `0.999` 时终止。`latency_mode=batch_amortized_end_to_end` 表示延迟包含摊销后的批量编码时间，不等同于在线单请求延迟。
+基准评测直接在 `base_embeddings.npz` 上执行精确 cosine 检索，沿用相同的论文、候选节点和节点类型过滤，避免本地 Qdrant 大集合扫描；在线服务仍使用配置中的 Qdrant。
 
 ## 2. 分阶段运行
 

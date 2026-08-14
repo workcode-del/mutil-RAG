@@ -7,6 +7,8 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+import numpy as np
+
 from paper_rag.domain import NodeType, QuerySpec
 from paper_rag.evaluation.metrics import result_metrics, serialize_hit, summarize
 from paper_rag.pipeline import ScientificRAGPipeline
@@ -70,6 +72,8 @@ def evaluate(
     per_type_top_k: int | None = None,
     scope_to_sample_papers: bool = True,
     metadata: dict[str, Any] | None = None,
+    query_vectors: dict[str, np.ndarray] | None = None,
+    query_embedding_ms: float = 0.0,
 ) -> dict[str, Any]:
     graph = pipeline.graph
     details: list[dict[str, Any]] = []
@@ -88,16 +92,19 @@ def evaluate(
             per_type_top_k=per_type_top_k,
             paper_ids=sample.paper_ids if scope_to_sample_papers and sample.paper_ids else None,
             candidate_node_ids=sample.candidate_node_ids or None,
+            query_vector=query_vectors[sample.query_id] if query_vectors is not None else None,
         )
-        latency_ms = (perf_counter() - started) * 1000.0
+        retrieval_ms = (perf_counter() - started) * 1000.0
         metrics = result_metrics(
             graph,
             result,
             sample.relevant_node_ids,
             cutoffs=cutoffs,
-            latency_ms=latency_ms,
+            latency_ms=retrieval_ms + query_embedding_ms,
             reference_answer=sample.answer,
         )
+        metrics["retrieval_latency_ms"] = retrieval_ms
+        metrics["query_embedding_amortized_ms"] = query_embedding_ms
         details.append(
             {
                 "query_id": sample.query_id,

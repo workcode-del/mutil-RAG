@@ -31,6 +31,8 @@ paper-rag benchmark all \
 
 `all` 会依次下载和转换数据、建立 Dense 索引、可选训练 HGT、运行系统矩阵并生成 JSON 报告和 `comparison.csv`。已有下载、解压和 MinerU 结果会复用；`--force` 重做数据准备，`--reindex` 重建向量索引。
 
+评测 query 默认按 `--query-batch-size 64` 批量编码，并在使用同一 embedding 模型的系统间复用。排名与指标仍逐样本计算；报告中的 `latency_mode=batch_amortized_end_to_end` 表示延迟包含摊销后的批量编码时间，不等同于在线单请求延迟。
+
 ## 2. 分阶段运行
 
 ```bash

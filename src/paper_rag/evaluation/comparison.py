@@ -17,6 +17,8 @@ DEFAULT_METRICS = (
     "macro_closure_validity",
     "macro_budget_violation",
     "macro_evidence_cost",
+    "macro_retrieval_latency_ms",
+    "macro_query_embedding_amortized_ms",
     "macro_latency_ms",
 )
 
@@ -28,7 +30,15 @@ def save_comparison(
 ) -> tuple[Path, str]:
     metric_names = tuple(metrics)
     rows = [_report_row(Path(path), metric_names) for path in reports]
-    fields = ["run", "candidate_backend", "retrieval_method", "reranker", "hgt", *metric_names]
+    fields = [
+        "run",
+        "candidate_backend",
+        "retrieval_method",
+        "reranker",
+        "hgt",
+        "latency_mode",
+        *metric_names,
+    ]
     target = Path(output)
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("w", newline="", encoding="utf-8-sig") as stream:
@@ -48,6 +58,7 @@ def _report_row(path: Path, metrics: tuple[str, ...]) -> dict[str, Any]:
         "retrieval_method": metadata.get("retrieval_method", ""),
         "reranker": metadata.get("reranker", ""),
         "hgt": metadata.get("hgt", ""),
+        "latency_mode": metadata.get("latency_mode", ""),
         **{metric: summary.get(metric, "") for metric in metrics},
     }
 

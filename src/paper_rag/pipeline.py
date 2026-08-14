@@ -70,10 +70,12 @@ class ScientificRAGPipeline:
         paper_ids: set[str] | None = None,
         candidate_node_ids: set[str] | None = None,
         log_stages: bool = False,
+        query_vector: np.ndarray | None = None,
     ) -> PipelineResult:
         started = perf_counter()
         effective_top_k = per_type_top_k or self.default_per_type_top_k
-        query_vector = self.embedder.embed_queries([query.query])[0] if self.embedder else None
+        if query_vector is None and self.embedder:
+            query_vector = self.embedder.embed_queries([query.query])[0]
         if log_stages:
             logger.info("Query stage: candidate recall (%s)", type(self.vector_store).__name__)
         hits = self.vector_store.search(

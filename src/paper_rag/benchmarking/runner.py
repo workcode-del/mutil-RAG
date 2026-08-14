@@ -5,7 +5,10 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any
+
+import numpy as np
 
 from paper_rag.benchmarking.base import BenchmarkLayout, read_jsonl, write_json
 from paper_rag.bootstrap import build_deployed_pipeline, build_retriever_config
@@ -58,6 +61,7 @@ def run_benchmark(
     per_type_top_k: int | None = None,
     cutoffs: tuple[int, ...] = (1, 3, 5, 10),
     allow_partial: bool = False,
+    query_batch_size: int = 64,
 ) -> dict[str, Any]:
     if "full" in systems and not hgt_artifacts:
         raise ValueError("The full system requires --hgt-artifacts")
@@ -84,6 +88,8 @@ def run_benchmark(
     retriever_config = build_retriever_config(config)
     report_paths: list[Path] = []
     summaries: dict[str, Any] = {}
+    query_vectors: dict[str, np.ndarray] | None = None
+    query_embedding_ms = 0.0
     groups = {(system.candidate_backend, system.reranker) for system in selected}
     for backend, reranker_enabled in sorted(groups):
         pipeline = build_deployed_pipeline(
@@ -96,6 +102,10 @@ def run_benchmark(
             selection_top_k=selection_top_k,
         )
         try:
+            if pipeline.embedder and query_vectors is None:
+                query_vectors, query_embedding_ms = _embed_queries(
+                    pipeline.embedder, samples, query_batch_size
+                )
             for name, system in zip(systems, selected, strict=True):
                 if (system.candidate_backend, system.reranker) != (backend, reranker_enabled):
                     continue
@@ -129,6 +139,10 @@ def run_benchmark(
                     "selection_top_k": selection_top_k,
                     "per_type_top_k": per_type_top_k,
                     "ranking_cutoffs": cutoffs,
+                    "query_batch_size": query_batch_size if pipeline.embedder else None,
+                    "latency_mode": (
+                        "batch_amortized_end_to_end" if pipeline.embedder else "online_end_to_end"
+                    ),
                     "scope": "sample",
                 }
                 report = evaluate(
@@ -138,6 +152,8 @@ def run_benchmark(
                     per_type_top_k=per_type_top_k,
                     scope_to_sample_papers=True,
                     metadata=metadata,
+                    query_vectors=query_vectors if pipeline.embedder else None,
+                    query_embedding_ms=query_embedding_ms if pipeline.embedder else 0.0,
                 )
                 target = layout.reports / f"{split}_{name}.json"
                 save_report(report, target)
@@ -163,6 +179,42 @@ def run_benchmark(
     write_json(layout.reports / f"{split}_summary.json", summary)
     logger.info("Benchmark complete: dataset=%s comparison=%s", layout.name, comparison)
     return summary
+
+
+def _embed_queries(embedder, samples, batch_size: int) -> tuple[dict[str, np.ndarray], float]:
+    if batch_size < 1:
+        raise ValueError("--query-batch-size must be positive")
+    started = perf_counter()
+    vectors: dict[str, np.ndarray] = {}
+    logger.info(
+        "Embedding benchmark queries: samples=%d batch_size=%d", len(samples), batch_size
+    )
+    for start in range(0, len(samples), batch_size):
+        batch = samples[start : start + batch_size]
+        encoded = embedder.embed_queries([sample.query.query for sample in batch])
+        vectors.update(
+            {sample.query_id: vector for sample, vector in zip(batch, encoded, strict=True)}
+        )
+        logger.info(
+            "Query embedding progress: %d/%d",
+            min(start + batch_size, len(samples)),
+            len(samples),
+        )
+    if len(vectors) != len(samples):
+        raise ValueError("Benchmark query IDs must be unique")
+    elapsed_ms = (perf_counter() - started) * 1000.0 / len(samples)
+    checks = [samples[0], samples[-1]] if len(samples) > 1 else samples
+    similarities = []
+    for sample in checks:
+        single = embedder.embed_queries([sample.query.query])[0]
+        batched = vectors[sample.query_id]
+        similarities.append(
+            float(single @ batched / (np.linalg.norm(single) * np.linalg.norm(batched)))
+        )
+    if min(similarities) < 0.9999:
+        raise RuntimeError(f"Batched query embedding mismatch: cosine={min(similarities):.6f}")
+    logger.info("Query embeddings verified: min_cosine=%.6f", min(similarities))
+    return vectors, elapsed_ms
 
 
 def train_benchmark_index(

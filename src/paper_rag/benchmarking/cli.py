@@ -79,6 +79,7 @@ def _add_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reindex", action="store_true")
     parser.add_argument("--selection-top-k", type=int, default=10)
     parser.add_argument("--per-type-top-k", type=int)
+    parser.add_argument("--query-batch-size", type=int, default=64)
     parser.add_argument("--ranking-k", nargs="+", type=int, default=(1, 3, 5, 10))
     parser.add_argument("--allow-partial", action="store_true")
 
@@ -171,6 +172,7 @@ def _run(args: argparse.Namespace) -> dict[str, dict]:
             per_type_top_k=args.per_type_top_k,
             cutoffs=cutoffs,
             allow_partial=args.allow_partial,
+            query_batch_size=args.query_batch_size,
         )
         for dataset in args.datasets
     }

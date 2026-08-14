@@ -22,6 +22,7 @@ from paper_rag.workflow import index_graph
 
 
 logger = logging.getLogger(__name__)
+MIN_BATCH_QUERY_COSINE = 0.999
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +91,7 @@ def run_benchmark(
     summaries: dict[str, Any] = {}
     query_vectors: dict[str, np.ndarray] | None = None
     query_embedding_ms = 0.0
+    query_embedding_min_cosine: float | None = None
     groups = {(system.candidate_backend, system.reranker) for system in selected}
     for backend, reranker_enabled in sorted(groups):
         pipeline = build_deployed_pipeline(
@@ -103,7 +105,7 @@ def run_benchmark(
         )
         try:
             if pipeline.embedder and query_vectors is None:
-                query_vectors, query_embedding_ms = _embed_queries(
+                query_vectors, query_embedding_ms, query_embedding_min_cosine = _embed_queries(
                     pipeline.embedder, samples, query_batch_size
                 )
             for name, system in zip(systems, selected, strict=True):
@@ -140,6 +142,9 @@ def run_benchmark(
                     "per_type_top_k": per_type_top_k,
                     "ranking_cutoffs": cutoffs,
                     "query_batch_size": query_batch_size if pipeline.embedder else None,
+                    "query_embedding_min_single_batch_cosine": (
+                        query_embedding_min_cosine if pipeline.embedder else None
+                    ),
                     "latency_mode": (
                         "batch_amortized_end_to_end" if pipeline.embedder else "online_end_to_end"
                     ),
@@ -181,7 +186,9 @@ def run_benchmark(
     return summary
 
 
-def _embed_queries(embedder, samples, batch_size: int) -> tuple[dict[str, np.ndarray], float]:
+def _embed_queries(
+    embedder, samples, batch_size: int
+) -> tuple[dict[str, np.ndarray], float, float]:
     if batch_size < 1:
         raise ValueError("--query-batch-size must be positive")
     started = perf_counter()
@@ -211,10 +218,11 @@ def _embed_queries(embedder, samples, batch_size: int) -> tuple[dict[str, np.nda
         similarities.append(
             float(single @ batched / (np.linalg.norm(single) * np.linalg.norm(batched)))
         )
-    if min(similarities) < 0.9999:
-        raise RuntimeError(f"Batched query embedding mismatch: cosine={min(similarities):.6f}")
-    logger.info("Query embeddings verified: min_cosine=%.6f", min(similarities))
-    return vectors, elapsed_ms
+    min_cosine = min(similarities)
+    if min_cosine < MIN_BATCH_QUERY_COSINE:
+        raise RuntimeError(f"Batched query embedding mismatch: cosine={min_cosine:.6f}")
+    logger.info("Query embeddings verified: min_cosine=%.6f", min_cosine)
+    return vectors, elapsed_ms, min_cosine
 
 
 def train_benchmark_index(

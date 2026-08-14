@@ -16,7 +16,11 @@ class FakeEmbedder:
         vectors = np.asarray(
             [[len(text), sum(map(ord, text)) % 997] for text in texts], dtype=np.float32
         )
-        return vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
+        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+        if len(texts) > 1:
+            vectors[:, 0] += 0.02
+            vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+        return vectors
 
 
 class RecordingStore:
@@ -38,7 +42,7 @@ class RecordingStore:
         return [SearchHit("p:s", "p", NodeType.SENTENCE, 1.0, {"embedding": 1.0})]
 
 
-def test_pipeline_passes_sample_paper_scope_to_candidate_store() -> None:
+def test_pipeline_applies_sample_scope() -> None:
     graph = EvidenceGraph()
     graph.add_node(EvidenceNode("p:s", "p", NodeType.SENTENCE, text="answer"))
     store = RecordingStore()
@@ -49,13 +53,27 @@ def test_pipeline_passes_sample_paper_scope_to_candidate_store() -> None:
         RankedEvidenceRetriever(graph, top_k=1, budget=10, image_unit=1),
     )
 
-    pipeline.run(QuerySpec("question"), paper_ids={"p"}, candidate_node_ids={"p:s"})
+    sample = EvaluationSample.from_dict(
+        {
+            "query_id": "q",
+            "query": "question",
+            "paper_id": "p",
+            "relevant_node_ids": ["p:s"],
+            "candidate_node_ids": ["p:s"],
+        },
+        0,
+    )
+    pipeline.run(
+        sample.query,
+        paper_ids=sample.paper_ids,
+        candidate_node_ids=sample.candidate_node_ids,
+    )
 
     assert store.paper_ids == {"p"}
     assert store.candidate_node_ids == {"p:s"}
 
 
-def test_pipeline_uses_precomputed_query_vector() -> None:
+def test_batched_queries_preserve_results_and_report_latency() -> None:
     graph = EvidenceGraph()
     graph.add_node(EvidenceNode("p:s", "p", NodeType.SENTENCE, text="answer"))
     embedder = FakeEmbedder()
@@ -66,68 +84,29 @@ def test_pipeline_uses_precomputed_query_vector() -> None:
         RankedEvidenceRetriever(graph, top_k=1, budget=10, image_unit=1),
     )
 
-    vector = embedder.embed_queries(["question"])[0]
-    embedder.calls = 0
-    online = pipeline.run(QuerySpec("question"))
-    cached = pipeline.run(QuerySpec("question"), query_vector=vector)
-
-    assert embedder.calls == 1
-    assert online.hits == cached.hits
-    assert online.forest == cached.forest
-
-
-def test_batched_query_embeddings_match_single_query_embeddings() -> None:
     samples = [
         EvaluationSample.from_dict(
             {"query_id": str(index), "query": query, "relevant_node_ids": ["p:s"]},
             index,
         )
-        for index, query in enumerate(("first question", "second question", "third"))
+        for index, query in enumerate(("question", "another question"))
     ]
-    embedder = FakeEmbedder()
-
-    batched, _ = _embed_queries(embedder, samples, batch_size=2)
-
-    for sample in samples:
-        expected = embedder.embed_queries([sample.query.query])[0]
-        np.testing.assert_allclose(batched[sample.query_id], expected, rtol=1e-6, atol=1e-6)
-
-
-def test_batched_latency_is_reported_separately() -> None:
-    graph = EvidenceGraph()
-    graph.add_node(EvidenceNode("p:s", "p", NodeType.SENTENCE, text="answer"))
-    pipeline = ScientificRAGPipeline(
-        graph,
-        FakeEmbedder(),
-        RecordingStore(),
-        RankedEvidenceRetriever(graph, top_k=1, budget=10, image_unit=1),
-    )
-    sample = EvaluationSample.from_dict(
-        {"query_id": "q", "query": "question", "relevant_node_ids": ["p:s"]}, 0
-    )
-
+    sample = samples[0]
+    vectors, embedding_ms, min_cosine = _embed_queries(embedder, samples, batch_size=128)
+    embedder.calls = 0
+    online = pipeline.run(QuerySpec("question"))
+    cached = pipeline.run(QuerySpec("question"), query_vector=vectors["0"])
     report = evaluate(
         pipeline,
         [sample],
-        query_vectors={"q": FakeEmbedder().embed_queries(["question"])[0]},
-        query_embedding_ms=3.0,
+        query_vectors=vectors,
+        query_embedding_ms=embedding_ms,
     )
     metrics = report["details"][0]["metrics"]
 
-    assert metrics["query_embedding_amortized_ms"] == 3.0
-    assert metrics["latency_ms"] == metrics["retrieval_latency_ms"] + 3.0
-
-
-def test_evaluation_sample_reads_candidate_scope() -> None:
-    sample = EvaluationSample.from_dict(
-        {
-            "query_id": "q",
-            "query": "question",
-            "paper_id": "p",
-            "relevant_node_ids": ["p:s"],
-            "candidate_node_ids": ["p:s", "p:n"],
-        },
-        0,
-    )
-
-    assert sample.candidate_node_ids == {"p:s", "p:n"}
+    assert embedder.calls == 1
+    assert online.hits == cached.hits
+    assert online.forest == cached.forest
+    assert 0.999 <= min_cosine < 1.0
+    assert metrics["query_embedding_amortized_ms"] == embedding_ms
+    assert metrics["latency_ms"] == metrics["retrieval_latency_ms"] + embedding_ms

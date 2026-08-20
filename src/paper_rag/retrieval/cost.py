@@ -21,8 +21,11 @@ class CostModel:
         node = graph.nodes[node_id]
         if node.node_type is NodeType.FIGURE:
             return self.image_unit
+        if node.node_type is NodeType.TABLE:
+            return estimate_text_tokens(node.searchable_text) + (
+                self.image_unit if node.image_path else 0
+            )
         return estimate_text_tokens(node.searchable_text)
 
     def set_cost(self, graph: EvidenceGraph, node_ids: set[str]) -> int:
         return sum(self.node_cost(graph, node_id) for node_id in node_ids)
-

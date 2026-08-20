@@ -1,6 +1,6 @@
 # 面向科研论文的细粒度多模态证据图 RAG
 
-这是一个以硕士论文为目标的可运行原型：从科研 PDF 中抽取原句、原图、图注、图片引用句和折线图数据，构建可回链页码与 bbox 的异构证据图；检索阶段返回满足证据依赖且不超过上下文预算的跨论文最小证据森林。
+这是一个以硕士论文为目标的可运行原型：从科研 PDF 中抽取原句、表格、原图、图表注、引用句和折线图数据，构建可回链页码与 bbox 的异构证据图；检索阶段返回满足证据依赖且不超过上下文预算的跨论文最小证据森林。
 
 当前主路线已更新到 2025–2026 年开源模型，基础算法 HGT、PCST 仅作为轻量结构适配器和候选骨架，不作为“首次提出”的创新声明。
 
@@ -24,7 +24,7 @@ flowchart LR
 
 ## 两个论文创新点
 
-1. **图结构约束的科研多模态索引**：使用 Qwen3-VL 统一表示文本和图片，把 Figure-Caption-Mention-ChartData 的真实论文关系变成结构监督；轻量 HGT 只在候选集上学习关系增强，输出句子、图片和曲线数据级定位。
+1. **图结构约束的科研多模态索引**：使用 Qwen3-VL 统一表示文本、表格和图片，把 Figure/Table-Caption-Mention-ChartData 关系变成结构监督；轻量 HGT 只在候选集上学习关系增强，输出句子、表格、图片和曲线数据级定位。
 2. **证据闭包约束的硬预算森林检索（EC-BFR）**：PCST只生成候选骨架；随后在原始有向异构图上补齐图注、原图、引用句和曲线来源等必要依赖，闭包后重新计费，并在严格预算内选择跨论文证据森林。
 
 不能宣称“首次多模态Graph RAG”“首次分层文档图”“首次预算图检索”或“首次使用PCST”。2025年的 LILaC 和2026年的 MAGE-RAG 已覆盖相近方向；本项目的差异边界见 [创新点与相关工作](docs/INNOVATION.md)。
@@ -43,7 +43,7 @@ flowchart LR
 
 | 路径 | 职责 |
 |---|---|
-| `src/paper_rag/parsing` | MinerU版本隔离、句子切分、图引用和bbox回填 |
+| `src/paper_rag/parsing` | MinerU版本隔离、句子切分、图表引用和bbox回填 |
 | `src/paper_rag/chart` | PP-Chart2Table、VLM自集成及DePlot基线 |
 | `src/paper_rag/embedding` | Qwen3-VL-Embedding、HTTP客户端、GME历史基线 |
 | `src/paper_rag/evidence_graph` | 异构证据图、关系构建和ChartData来源记录 |
@@ -51,7 +51,7 @@ flowchart LR
 | `src/paper_rag/reranking` | Qwen3-VL原图/文本混合重排与HTTP客户端 |
 | `src/paper_rag/retrieval` | RRF、PCST、类型闭包和EC-BFR |
 | `src/paper_rag/generation` | 证据序列化、Qwen3-VL兼容API和引用ID校验 |
-| `src/paper_rag/benchmarking` | PeerQA/MMDocRAG批量下载、转换、索引与对比实验 |
+| `src/paper_rag/benchmarking` | 公开 benchmark 下载、转换、索引与对比实验 |
 | `services` | Embedding、Reranker和主检索HTTP服务 |
 | `tests` | 不下载模型即可运行的算法与接口测试 |
 
@@ -63,7 +63,7 @@ flowchart LR
 
 ## 公开数据集评测
 
-PeerQA 与 MMDocRAG 共用一个入口，以下命令会断点续传数据、批量转换、建立索引、运行对比系统并生成汇总表：
+公开数据集共用一个入口，以下命令会断点续传数据、批量转换、建立索引、运行对比系统并生成汇总表：
 
 ```bash
 paper-rag benchmark all \
@@ -73,4 +73,4 @@ paper-rag benchmark all \
   --train-hgt
 ```
 
-去掉 `--train-hgt` 可只比较无训练基线；保留它则按 train/test 隔离训练创新点一，并加入完整方法。运行模式、数据目录、候选范围和指标定义见 [统一公开数据集评测](docs/BENCHMARKS.md)。
+去掉 `--train-hgt` 可只比较无训练基线；保留它则按 train/test 隔离训练创新点一，并加入完整方法。公开与自定义数据的运行模式、候选范围和指标定义见 [统一评测](docs/EVALUATION.md)。

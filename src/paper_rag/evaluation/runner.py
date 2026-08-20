@@ -46,7 +46,10 @@ class EvaluationSample:
                 unit=data.get("unit"),
                 conditions=[str(value) for value in data.get("conditions", [])],
                 required_modalities=[
-                    str(value) for value in data.get("required_modalities", ["text", "figure"])
+                    str(value)
+                    for value in data.get(
+                        "required_modalities", ["text", "figure", "table"]
+                    )
                 ],
             ),
             relevant_node_ids=gold,
@@ -133,7 +136,13 @@ def micro_evidence_metrics(
     graph, details: list[dict[str, Any]]
 ) -> dict[str, float | None]:
     result: dict[str, float | None] = {}
-    node_types = (NodeType.SENTENCE, NodeType.FIGURE, NodeType.CAPTION, NodeType.CHART_DATA)
+    node_types = (
+        NodeType.SENTENCE,
+        NodeType.FIGURE,
+        NodeType.TABLE,
+        NodeType.CAPTION,
+        NodeType.CHART_DATA,
+    )
     for node_type in (None, *node_types):
         gold = {
             (row["query_id"], node_id)

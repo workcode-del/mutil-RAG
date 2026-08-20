@@ -9,6 +9,7 @@ from paper_rag.evidence_graph import EvidenceGraph
 @dataclass(frozen=True, slots=True)
 class ClosurePolicy:
     figure_requires_caption: bool = True
+    table_requires_caption: bool = True
     chart_requires_figure: bool = True
     sentence_reference_requires_figure: bool = True
     include_locator_nodes: bool = False
@@ -37,6 +38,12 @@ def evidence_closure(
                     for edge in incident
                     if edge.relation is RelationType.CAPTION_OF and edge.dst == node_id
                 )
+            if node.node_type is NodeType.TABLE and policy.table_requires_caption:
+                additions.update(
+                    edge.src
+                    for edge in incident
+                    if edge.relation is RelationType.CAPTION_OF and edge.dst == node_id
+                )
             if node.node_type is NodeType.CHART_DATA and policy.chart_requires_figure:
                 additions.update(
                     edge.dst
@@ -57,4 +64,3 @@ def evidence_closure(
 
 def validate_closure(graph: EvidenceGraph, node_ids: set[str], policy: ClosurePolicy) -> bool:
     return evidence_closure(graph, node_ids, policy) == node_ids
-

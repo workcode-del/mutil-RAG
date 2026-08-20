@@ -11,6 +11,7 @@ class NodeType(StrEnum):
     PARAGRAPH = "Paragraph"
     SENTENCE = "Sentence"
     FIGURE = "Figure"
+    TABLE = "Table"
     CAPTION = "Caption"
     CHART_DATA = "ChartData"
 
@@ -60,6 +61,8 @@ class EvidenceNode:
             raise ValueError("confidence must be in [0, 1]")
         if self.node_type is NodeType.FIGURE and not self.image_path:
             raise ValueError("Figure node requires image_path")
+        if self.node_type is NodeType.TABLE and not (self.text or self.image_path):
+            raise ValueError("Table node requires text and/or image_path")
         if self.node_type is not NodeType.FIGURE and self.text is None:
             self.text = ""
 
@@ -102,7 +105,9 @@ class QuerySpec:
     value: float | None = None
     unit: str | None = None
     conditions: list[str] = field(default_factory=list)
-    required_modalities: list[str] = field(default_factory=lambda: ["text", "figure"])
+    required_modalities: list[str] = field(
+        default_factory=lambda: ["text", "figure", "table"]
+    )
 
     @property
     def required_slots(self) -> set[str]:

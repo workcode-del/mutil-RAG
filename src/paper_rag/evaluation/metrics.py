@@ -68,16 +68,23 @@ def result_metrics(
         "selected_nodes": float(len(selected)),
         "latency_ms": latency_ms,
     }
-    largest_cutoff = max(cutoffs)
-    ranked_prefix = set(ranked_ids[:largest_cutoff])
-    node_types = (NodeType.SENTENCE, NodeType.FIGURE, NodeType.CAPTION, NodeType.CHART_DATA)
+    node_types = (
+        NodeType.SENTENCE,
+        NodeType.FIGURE,
+        NodeType.TABLE,
+        NodeType.CAPTION,
+        NodeType.CHART_DATA,
+    )
     for node_type in node_types:
         typed_gold = {
             node_id for node_id in gold_ids if graph.nodes[node_id].node_type is node_type
         }
-        metrics[f"{node_type.value.lower()}_recall_at_{largest_cutoff}"] = (
-            len(typed_gold & ranked_prefix) / len(typed_gold) if typed_gold else None
-        )
+        prefix = node_type.value.lower()
+        for cutoff in sorted(set(cutoffs)):
+            ranked_prefix = set(ranked_ids[:cutoff])
+            metrics[f"{prefix}_recall_at_{cutoff}"] = (
+                len(typed_gold & ranked_prefix) / len(typed_gold) if typed_gold else None
+            )
         typed_selected = {
             node_id for node_id in selected if graph.nodes[node_id].node_type is node_type
         }
@@ -86,7 +93,6 @@ def result_metrics(
             typed_true_positive / len(typed_selected) if typed_selected else 0.0
         )
         typed_recall = typed_true_positive / len(typed_gold) if typed_gold else None
-        prefix = node_type.value.lower()
         metrics[f"{prefix}_evidence_precision"] = typed_precision if typed_gold else None
         metrics[f"{prefix}_evidence_recall"] = typed_recall
         metrics[f"{prefix}_evidence_f1"] = (

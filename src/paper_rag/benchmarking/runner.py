@@ -20,7 +20,11 @@ from paper_rag.evidence_graph import load_graph
 from paper_rag.models.cached_scorer import CachedHGTScorer
 from paper_rag.retrieval import build_evidence_retriever
 from paper_rag.training import build_query_pairs, embed_training_queries, train_hgt
-from paper_rag.workflow import index_graph
+from paper_rag.workflow import (
+    embedding_cache_is_current,
+    embedding_config_digest,
+    index_graph,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -128,7 +132,8 @@ def run_benchmark(
                     selection_top_k=selection_top_k,
                 )
                 logger.info(
-                    "Benchmark system: dataset=%s system=%s backend=%s retrieval=%s reranker=%s hgt=%s",
+                    "Benchmark system: dataset=%s system=%s backend=%s "
+                    "retrieval=%s reranker=%s hgt=%s",
                     layout.name,
                     name,
                     backend,
@@ -294,29 +299,36 @@ def ensure_dense_index(
 ) -> Path:
     graph_digest = hashlib.sha256(layout.graph.read_bytes()).hexdigest()
     marker = layout.processed / "dense_index.json"
+    embedding_cache = layout.processed / "base_embeddings.npz"
     config = load_yaml(config_path)
-    vector = config["vector_store"]
-    local_index_exists = (
-        vector.get("mode", "local") != "local" or Path(vector["path"]).exists()
+    embedding_digest = embedding_config_digest(config)
+    state = json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else {}
+    cache_matches = (
+        embedding_cache_is_current(layout.graph, config, embedding_cache)
+        and state.get("graph_sha256") == graph_digest
+        and state.get("embedding_config_sha256") == embedding_digest
     )
-    if marker.exists() and local_index_exists and not force:
-        state = json.loads(marker.read_text(encoding="utf-8"))
-        if state.get("graph_sha256") == graph_digest:
-            logger.info("Using cached dense index: dataset=%s", layout.name)
-            return marker
+    if cache_matches and not force:
+        logger.info("Using cached benchmark embeddings: dataset=%s", layout.name)
+        return marker
 
-    logger.info("Building dense index: dataset=%s", layout.name)
+    logger.info("Building benchmark embedding cache: dataset=%s", layout.name)
     report = index_graph(
         layout.graph,
         config_path,
-        layout.processed / "base_embeddings.npz",
+        embedding_cache,
+        force_embeddings=force or not cache_matches,
+        upsert_vector_store=False,
     )
     write_json(
         marker,
         {
             "graph_sha256": graph_digest,
+            "embedding_config_sha256": embedding_digest,
+            "embedding_model": config["embedding"].get("model"),
             "text_nodes": report.text_nodes,
             "figure_nodes": report.figure_nodes,
+            "table_nodes": report.table_nodes,
             "dimension": report.dimension,
         },
     )
@@ -324,7 +336,7 @@ def ensure_dense_index(
 
 
 def _official_split(dataset: str) -> str:
-    return "all" if dataset == "peerqa" else "test"
+    return "test" if dataset == "mmdocrag" else "all"
 
 
 def _validate_preparation(layout: BenchmarkLayout) -> None:
@@ -332,7 +344,7 @@ def _validate_preparation(layout: BenchmarkLayout) -> None:
     if not report_path.exists():
         return
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    keys = ["missing_images"]
+    keys = ["missing_images", "missing_evidence"]
     if report.get("evaluation_scope") == "official_all_papers":
         keys.extend(("download_errors", "parse_errors", "missing_papers"))
     problems = {key: report.get(key) for key in keys if report.get(key)}

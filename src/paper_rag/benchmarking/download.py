@@ -89,11 +89,35 @@ def _valid_download(path: Path) -> bool:
     if suffix == ".pdf":
         with path.open("rb") as stream:
             return stream.read(5) == b"%PDF-"
-    if suffix == ".jsonl":
+    if suffix in {".json", ".jsonl"}:
         try:
             with path.open(encoding="utf-8") as stream:
-                first = next(line for line in stream if line.strip())
-                return isinstance(json.loads(first), dict)
+                if suffix == ".jsonl":
+                    first = next(line for line in stream if line.strip())
+                    return isinstance(json.loads(first), dict)
+                return isinstance(json.load(stream), (dict, list))
         except (OSError, StopIteration, UnicodeDecodeError, json.JSONDecodeError):
             return False
     return True
+
+
+def valid_image_file(path: str | Path) -> bool:
+    """Cheaply reject empty, mislabeled, and HTML/error-page image files."""
+    image = Path(path)
+    try:
+        with image.open("rb") as stream:
+            header = stream.read(12)
+    except OSError:
+        return False
+    suffix = image.suffix.casefold()
+    return (
+        (suffix == ".png" and header.startswith(b"\x89PNG\r\n\x1a\n"))
+        or (suffix in {".jpg", ".jpeg"} and header.startswith(b"\xff\xd8\xff"))
+        or (suffix == ".webp" and header.startswith(b"RIFF") and header[8:12] == b"WEBP")
+        or (suffix == ".gif" and header.startswith((b"GIF87a", b"GIF89a")))
+        or (suffix == ".bmp" and header.startswith(b"BM"))
+        or (
+            suffix in {".tif", ".tiff"}
+            and header.startswith((b"II*\x00", b"MM\x00*"))
+        )
+    )

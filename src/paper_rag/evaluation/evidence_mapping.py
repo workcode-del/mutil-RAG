@@ -36,7 +36,8 @@ def map_evidence(
         node
         for node in graph.nodes.values()
         if node.paper_id == paper_id
-        and node.node_type in {NodeType.SENTENCE, NodeType.CAPTION, NodeType.CHART_DATA}
+        and node.node_type
+        in {NodeType.SENTENCE, NodeType.TABLE, NodeType.CAPTION, NodeType.CHART_DATA}
         and normalize_evidence(node.searchable_text)
     ]
     normalized = {node.node_id: normalize_evidence(node.searchable_text) for node in candidates}

@@ -1,8 +1,12 @@
+import zipfile
 from pathlib import Path
 
 from paper_rag.benchmarking.base import BenchmarkLayout, grouped_split, write_json
-from paper_rag.benchmarking.cli import _report_summaries
+from paper_rag.benchmarking.cli import _ranking_cutoffs, _report_summaries
+from paper_rag.benchmarking.download import _valid_download, extract_zip
 from paper_rag.benchmarking.mmdocrag import _build_quote_graph, _sample, _string_list
+from paper_rag.benchmarking.multimodalqa import _component_graph, _samples
+from paper_rag.benchmarking.page_datasets import _mmlong_samples, _page_node_id
 from paper_rag.benchmarking.peerqa import _build_official_graph
 from paper_rag.benchmarking.runner import _validate_preparation
 from paper_rag.domain import NodeType
@@ -134,6 +138,116 @@ def test_mmdocrag_modality_metadata_accepts_scalar_or_list() -> None:
     assert _string_list(["text", "image"]) == ["text", "image"]
 
 
+def test_benchmark_cutoffs_are_dataset_specific() -> None:
+    assert _ranking_cutoffs(None, "peerqa") == (1, 3, 5, 10)
+    assert _ranking_cutoffs(None, "mmdocrag") == (1, 3, 5, 10, 15, 20)
+    assert _ranking_cutoffs([20, 10, 20], "mmdocrag") == (10, 20)
+    assert _ranking_cutoffs(None, "m3docvqa") == (1, 3, 5, 10)
+    assert _ranking_cutoffs(None, "mmlongbench_doc") == (1, 3, 5, 10)
+    assert _ranking_cutoffs(None, "multimodalqa") == (1, 3, 5, 10)
+
+
+def test_multimodalqa_imports_text_table_image_components(tmp_path) -> None:
+    documents = tmp_path / "parsed_documents" / "dev"
+    images = tmp_path / "image_components" / "dev"
+    documents.mkdir(parents=True)
+    images.mkdir(parents=True)
+    (images / "figure.png").write_bytes(b"\x89PNG\r\n\x1a\nvalid-test-stub")
+    (documents / "doc.json").write_text(
+        __import__("json").dumps(
+            {
+                "title": "Paper A",
+                "text": {"text_1": {"text": "Text evidence"}},
+                "table": {
+                    "table_1": {
+                        "table": [
+                            [{"text": "Model"}, {"text": "F1"}],
+                            [
+                                {"text": "Ours", "image": {"filename": "figure.png"}},
+                                {"text": "90"},
+                            ],
+                        ]
+                    }
+                },
+                "image": {
+                    "image_1": {"filename": "figure.png", "caption": {"text": "A figure"}}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    graph, index, missing_images = _component_graph(documents.parent, images.parent)
+    rows = [
+        {
+            "qid": "q1",
+            "question": "Compare the evidence",
+            "answers": [{"answer": "Ours"}],
+            "evidences": [
+                {
+                    "mmqa_doc_modality": "table",
+                    "gold_webpage_title": "Paper A",
+                    "gold_component_id": "table_1",
+                },
+                {
+                    "mmqa_doc_modality": "image",
+                    "gold_webpage_title": "Paper A",
+                    "gold_component_id": "image_1",
+                },
+            ],
+        }
+    ]
+    samples, missing_evidence = _samples(rows, index)
+
+    assert not missing_images
+    assert not missing_evidence
+    assert {node.node_type for node in graph.nodes.values()} >= {
+        NodeType.SENTENCE,
+        NodeType.TABLE,
+        NodeType.FIGURE,
+        NodeType.CAPTION,
+    }
+    assert samples[0]["required_modalities"] == ["table", "image"]
+    assert len(samples[0]["relevant_node_ids"]) == 2
+    assert next(
+        node for node in graph.nodes.values() if node.node_type is NodeType.TABLE
+    ).image_path.endswith("figure.png")
+
+
+def test_mmlongbench_uses_gold_evidence_pages() -> None:
+    from paper_rag.domain import EvidenceNode
+    from paper_rag.evidence_graph import EvidenceGraph
+
+    graph = EvidenceGraph()
+    for page in range(1, 4):
+        graph.add_node(
+            EvidenceNode(
+                _page_node_id("mmlongbench_doc", "paper.pdf", page),
+                "paper.pdf",
+                NodeType.FIGURE,
+                image_path=f"page-{page}.png",
+            )
+        )
+    samples, invalid = _mmlong_samples(
+        [
+            {
+                "doc_id": "paper.pdf",
+                "question": "Which model wins?",
+                "answer": "Ours",
+                "answer_format": "Str",
+                "evidence_pages": "[1, 2]",
+                "evidence_sources": "['Table', 'Chart']",
+            }
+        ],
+        graph,
+    )
+
+    assert not invalid
+    assert samples[0]["required_modalities"] == ["table", "figure"]
+    assert len(samples[0]["relevant_node_ids"]) == 2
+    assert len(samples[0]["candidate_node_ids"]) == 3
+
+
 def test_peerqa_redistributable_scope_allows_licensed_subset(tmp_path) -> None:
     layout = BenchmarkLayout.create("peerqa", tmp_path)
     write_json(
@@ -184,6 +298,37 @@ def test_prepare_console_report_summarizes_details() -> None:
         "nodes": 10,
         "missing_papers_count": 2,
         "missing_images_count": 0,
+        "missing_evidence_count": 0,
         "download_errors_count": 1,
         "parse_errors_count": 0,
     }
+
+
+def test_zip_validation_rejects_html_cache(tmp_path) -> None:
+    archive = tmp_path / "dataset.zip"
+    archive.write_text("<html>access denied</html>", encoding="utf-8")
+    assert not _valid_download(archive)
+
+
+def test_zip_validation_accepts_and_extracts_archive(tmp_path) -> None:
+    archive = tmp_path / "dataset.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("qa.jsonl", "{}\n")
+
+    assert _valid_download(archive)
+    output = extract_zip(archive, tmp_path / "output")
+    assert (output / "qa.jsonl").read_text(encoding="utf-8") == "{}\n"
+
+
+def test_download_validation_checks_pdf_and_jsonl_signatures(tmp_path) -> None:
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"<html>rate limited</html>")
+    assert not _valid_download(pdf)
+    pdf.write_bytes(b"%PDF-1.7\n")
+    assert _valid_download(pdf)
+
+    data = tmp_path / "qa.jsonl"
+    data.write_text("<html>access denied</html>", encoding="utf-8")
+    assert not _valid_download(data)
+    data.write_text('{"question": "why?"}\n', encoding="utf-8")
+    assert _valid_download(data)

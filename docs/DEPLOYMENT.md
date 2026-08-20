@@ -117,7 +117,7 @@ paper-rag train-index \
 - `query_projector.pt`：在线 query 投影；
 - `training.json`：图哈希、训练 query 和关系三元组统计。
 
-公开数据的准备、训练和测试可直接使用 `paper-rag benchmark all --train-hgt`，见 [BENCHMARKS.md](BENCHMARKS.md)。
+公开数据的准备、训练和测试可直接使用 `paper-rag benchmark all --train-hgt`，见 [EVALUATION.md](EVALUATION.md)。
 
 ## 6. 启动服务
 

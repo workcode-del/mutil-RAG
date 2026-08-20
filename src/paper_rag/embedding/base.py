@@ -15,6 +15,8 @@ class Embedder(Protocol):
 
     def embed_images(self, image_paths: Sequence[str]) -> np.ndarray: ...
 
+    def embed_mixed(self, items: Sequence[dict]) -> np.ndarray: ...
+
 
 def deterministic_mock_embedding(value: str, dimension: int = 2048) -> np.ndarray:
     """Repeatable normalized vector for interface tests; never use in experiments."""
@@ -37,4 +39,9 @@ class MockEmbedder:
     def embed_images(self, image_paths: Sequence[str]) -> np.ndarray:
         return np.stack(
             [deterministic_mock_embedding(f"image:{x}", self.dimension) for x in image_paths]
+        )
+
+    def embed_mixed(self, items: Sequence[dict]) -> np.ndarray:
+        return np.stack(
+            [deterministic_mock_embedding(f"mixed:{item!r}", self.dimension) for item in items]
         )

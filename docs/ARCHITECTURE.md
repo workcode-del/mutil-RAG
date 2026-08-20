@@ -1,12 +1,12 @@
 # 系统架构
 
-本文只描述当前代码已经实现的主流程。运行命令见 [DEPLOYMENT.md](DEPLOYMENT.md)，公开数据评测见 [BENCHMARKS.md](BENCHMARKS.md)。
+本文只描述当前代码已经实现的主流程。运行命令见 [DEPLOYMENT.md](DEPLOYMENT.md)，评测协议见 [EVALUATION.md](EVALUATION.md)。
 
 ## 1. 主流程
 
 ```text
 PDF
- └─ MinerU → Sentence / Figure / Caption 证据图
+ └─ MinerU → Sentence / Figure / Table / Caption 证据图
       └─ 可选图表增强 → ChartData
            └─ Qwen3-VL Embedding → Qdrant + 基础向量缓存
                 └─ 可选 HGT 候选增强
@@ -25,23 +25,25 @@ PDF
 |---|---|
 | `Sentence` | 切分后的正文句子 |
 | `Figure` | MinerU 导出的原图路径 |
-| `Caption` | 独立或图片内嵌图注 |
+| `Table` | MinerU 表格 HTML/文本及可选的表格截图 |
+| `Caption` | 独立或图、表内嵌的图注/表注 |
 | `ChartData` | 图表增强得到的线性化表格 |
 
 当前自动构建的关系：
 
 - `Sentence --next_sentence--> Sentence`
 - `Caption --caption_of--> Figure`
-- `Sentence --refers_to--> Figure`
+- `Caption --caption_of--> Table`
+- `Sentence --refers_to--> Figure/Table`
 - `ChartData --derived_from--> Figure`
 
 节点保留 `node_id`、`paper_id`、页码、bbox、解析块 ID 和来源信息。`Paper`、`Section`、`Paragraph`、`contains`、`semantically_similar` 已在数据结构中预留，但当前 MinerU 主流程不生成，不能作为现有实验能力报告。
 
-MMDocRAG 官方协议直接把候选 quote 转成 `Sentence` 或 `Figure`。该图不推断原数据没有提供的关系，详见 [BENCHMARKS.md](BENCHMARKS.md)。
+MMDocRAG 官方协议直接把候选 quote 转成 `Sentence` 或 `Figure`。该图不推断原数据没有提供的关系，详见 [EVALUATION.md](EVALUATION.md)。
 
 ## 3. 基础索引与 HGT
 
-基础索引对文本节点和原图分别编码为 2048 维向量，写入 Qdrant，并保存同一份 NPZ 供训练使用。检索时按节点类型分别取 top-k，减少文本节点数量对图片召回的挤压。
+基础索引把文本节点、原图和表格分别编码为 2048 维向量，写入 Qdrant，并保存同一份 NPZ 供训练使用。Table 有截图时使用图文联合编码，只有 HTML/文本时使用文本编码。检索与重排均显式包含 Table，并按节点类型分别取 top-k，减少文本数量对图片和表格召回的挤压。
 
 HGT 使用配置中的节点类型投影和两层异构消息传递：
 
@@ -70,7 +72,7 @@ query: 2048 → MLP                  → 256
 | `pcst_closure` | PCST 后补全证据依赖 |
 | `ec_bfr` | 多尺度 PCST、闭包后计费、跨论文硬预算选择 |
 
-EC-BFR 的闭包规则以最小不动点执行：选中 Figure 补 Caption，选中 ChartData 补 Figure，选中引用图的 Sentence 补 Figure；迭代后也会补齐该 Figure 的 Caption。
+EC-BFR 的闭包规则以最小不动点执行：选中 Figure 或 Table 补 Caption，选中 ChartData 补 Figure，选中引用图表的 Sentence 补对应 Figure/Table；迭代后继续补齐依赖。Table 成本包含线性化文本，并在有截图时额外计入一个图片单位。
 
 成本模型是稳定代理值：文本按简单 token 规则估算，图片按固定 `image_unit` 计费。它用于方法内公平比较，不等同于生成模型的真实计费 token。槽位覆盖读取 `QuerySpec` 中的字段；实体新颖性依赖节点已有的 `attributes.entities`，当前 MinerU 流程没有自动 NER，因此该项通常不生效。
 
@@ -78,7 +80,7 @@ EC-BFR 的闭包规则以最小不动点执行：选中 Figure 补 Caption，选
 
 `list-figures` 导出全部 Figure，当前没有自动折线图分类器，需要人工筛选清单。`enrich-charts` 可读取人工提供的 `linearized_table`，也可调用 OpenAI-compatible 多模态服务重复解析并聚合，生成 `ChartData --derived_from--> Figure`。
 
-生成模块是可选项。它把证据文本和原图发送到 OpenAI-compatible `/chat/completions`，要求返回 JSON：
+生成模块是可选项。它把正文、表格文本和 Figure/Table 截图发送到 OpenAI-compatible `/chat/completions`，要求返回 JSON：
 
 ```json
 {"answer":"...","evidence_ids":["paper:sentence:1:0"]}

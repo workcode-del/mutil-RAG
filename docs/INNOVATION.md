@@ -7,7 +7,7 @@
 ### 已实现
 
 - 使用 Qwen3-VL Embedding 统一编码 query、文本节点和原图；
-- 从 MinerU 结果构建 Sentence、Figure、Caption 及其显式关系；
+- 从 MinerU 结果构建 Sentence、Figure、Table、Caption 及其显式关系；
 - 图表增强后增加 ChartData 和 `derived_from`；
 - 使用两层 HGT 将 2048 维基础表示映射到 256 维结构空间；
 - 查询—证据 margin loss，保留问题的全部 gold 证据；
@@ -36,7 +36,7 @@
 
 - 按论文扩展候选，并在多个 cost scale 上运行 PCST；
 - 在原始有向图上计算最小证据闭包；
-- Figure 补 Caption，ChartData 补 Figure，引用图的 Sentence 补 Figure；
+- Figure/Table 补 Caption，ChartData 补 Figure，引用图表的 Sentence 补对应节点；
 - 闭包后重新计算文本和图片代理成本；
 - 淘汰超过总预算的候选；
 - 根据相关性、QuerySpec 槽位覆盖、实体新颖性和冗余选择跨论文森林；

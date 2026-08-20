@@ -81,7 +81,13 @@ class ScientificRAGPipeline:
         hits = self.vector_store.search(
             query.query,
             query_vector,
-            [NodeType.SENTENCE, NodeType.FIGURE, NodeType.CAPTION, NodeType.CHART_DATA],
+            [
+                NodeType.SENTENCE,
+                NodeType.FIGURE,
+                NodeType.TABLE,
+                NodeType.CAPTION,
+                NodeType.CHART_DATA,
+            ],
             effective_top_k,
             paper_ids,
             candidate_node_ids,
@@ -101,7 +107,7 @@ class ScientificRAGPipeline:
             documents: list[str | dict[str, object]] = []
             for hit in hits:
                 node = self.graph.nodes[hit.node_id]
-                if node.node_type is NodeType.FIGURE:
+                if node.node_type in {NodeType.FIGURE, NodeType.TABLE} and node.image_path:
                     documents.append(
                         {"image": node.image_path, "text": node.searchable_text or None}
                     )
@@ -115,7 +121,11 @@ class ScientificRAGPipeline:
         scorer_names = sorted({name for hit in hits for name in hit.score_components})
         rank_positions: dict[str, dict[str, int]] = {}
         for scorer in scorer_names:
-            ranked = sorted(hits, key=lambda hit: hit.score_components.get(scorer, -1e9), reverse=True)
+            ranked = sorted(
+                hits,
+                key=lambda hit: hit.score_components.get(scorer, -1e9),
+                reverse=True,
+            )
             rank_positions[scorer] = {hit.node_id: rank for rank, hit in enumerate(ranked, 1)}
         for hit in hits:
             hit.score = sum(
@@ -125,7 +135,10 @@ class ScientificRAGPipeline:
         hits = self.forest_retriever.rank_hits(query, hits)
 
         if log_stages:
-            logger.info("Query stage: evidence retrieval (%s)", type(self.forest_retriever).__name__)
+            logger.info(
+                "Query stage: evidence retrieval (%s)",
+                type(self.forest_retriever).__name__,
+            )
         forest = self.forest_retriever.retrieve(query, hits)
         if log_stages and self.generator:
             logger.info("Query stage: answer generation (%s)", type(self.generator).__name__)

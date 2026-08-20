@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import subprocess
 from pathlib import Path
@@ -64,13 +66,24 @@ def index_graph(
     graph_path: str | Path,
     config_path: str | Path,
     embedding_cache: str | Path,
+    *,
+    force_embeddings: bool = False,
+    upsert_vector_store: bool = True,
 ) -> IndexingReport:
     config = load_yaml(config_path)
     graph = load_graph(graph_path)
-    logger.info("Vector index: nodes=%d graph=%s", len(graph.nodes), graph_path)
-    store = build_vector_store(config)
+    logger.info(
+        "%s: nodes=%d graph=%s",
+        "Vector index" if upsert_vector_store else "Embedding cache",
+        len(graph.nodes),
+        graph_path,
+    )
     target = Path(embedding_cache)
-    embeddings = _load_embedding_cache(target, graph, int(config["embedding"]["dimension"]))
+    embeddings = (
+        None
+        if force_embeddings or not embedding_cache_is_current(graph_path, config, target)
+        else _load_embedding_cache(target, graph, int(config["embedding"]["dimension"]))
+    )
     if embeddings is None:
         embedding_config = config["embedding"]
         embeddings, report = compute_base_embeddings(
@@ -82,22 +95,89 @@ def index_graph(
         target.parent.mkdir(parents=True, exist_ok=True)
         logger.info("Saving embedding cache: vectors=%d path=%s", len(embeddings), target)
         np.savez_compressed(target, **embeddings)
+        _write_embedding_cache_metadata(graph_path, config, target)
         logger.info("Embedding cache ready: path=%s", target)
     else:
         figures = sum(node.node_type is NodeType.FIGURE for node in graph.nodes.values())
-        report = IndexingReport(len(graph.nodes) - figures, figures, int(config["embedding"]["dimension"]))
+        tables = sum(node.node_type is NodeType.TABLE for node in graph.nodes.values())
+        report = IndexingReport(
+            len(graph.nodes) - figures - tables,
+            figures,
+            int(config["embedding"]["dimension"]),
+            tables,
+        )
         logger.info("Using embedding cache: vectors=%d path=%s", len(embeddings), target)
-    upsert_base_embeddings(store, graph, embeddings)
-    if hasattr(store.client, "close"):
-        store.client.close()
+    if upsert_vector_store:
+        store = build_vector_store(config)
+        upsert_base_embeddings(store, graph, embeddings)
+        if hasattr(store.client, "close"):
+            store.client.close()
     logger.info(
-        "Vector index ready: text=%d figures=%d dimension=%d cache=%s",
+        "Vector index ready: text=%d tables=%d figures=%d dimension=%d cache=%s",
         report.text_nodes,
+        report.table_nodes,
         report.figure_nodes,
         report.dimension,
         target,
     )
     return report
+
+
+def embedding_config_digest(config: dict[str, Any]) -> str:
+    payload = {
+        "embedding": config.get("embedding", {}),
+        "model_download": config.get("model_download", {}),
+        "runtime": config.get("runtime", {}),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def embedding_cache_is_current(
+    graph_path: str | Path,
+    config: dict[str, Any],
+    embedding_cache: str | Path,
+) -> bool:
+    cache = Path(embedding_cache)
+    metadata_path = _embedding_cache_metadata_path(cache)
+    if not cache.exists() or not metadata_path.exists():
+        return False
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (
+        metadata.get("graph_sha256") == hashlib.sha256(Path(graph_path).read_bytes()).hexdigest()
+        and metadata.get("embedding_config_sha256") == embedding_config_digest(config)
+    )
+
+
+def _write_embedding_cache_metadata(
+    graph_path: str | Path,
+    config: dict[str, Any],
+    embedding_cache: Path,
+) -> None:
+    metadata = {
+        "version": 1,
+        "graph_sha256": hashlib.sha256(Path(graph_path).read_bytes()).hexdigest(),
+        "embedding_config_sha256": embedding_config_digest(config),
+        "embedding_model": config["embedding"].get("model"),
+        "dimension": int(config["embedding"]["dimension"]),
+    }
+    _embedding_cache_metadata_path(embedding_cache).write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _embedding_cache_metadata_path(embedding_cache: Path) -> Path:
+    return embedding_cache.with_suffix(f"{embedding_cache.suffix}.meta.json")
 
 
 def _load_embedding_cache(
@@ -137,6 +217,7 @@ def build_corpus(
         "edges": len(graph.edges),
         "text_nodes": report.text_nodes,
         "figure_nodes": report.figure_nodes,
+        "table_nodes": report.table_nodes,
         "dimension": report.dimension,
         "graph": str(Path(graph_path).resolve()),
         "embeddings": str(Path(embedding_cache).resolve()),

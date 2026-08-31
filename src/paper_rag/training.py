@@ -11,7 +11,8 @@ import numpy as np
 
 from paper_rag.bootstrap import build_embedder
 from paper_rag.config import load_yaml
-from paper_rag.evidence_graph import load_graph
+from paper_rag.domain import EvidenceEdge
+from paper_rag.evidence_graph import EvidenceGraph, load_graph
 from paper_rag.io import read_jsonl, write_jsonl
 from paper_rag.models import HGTConfig, build_heterodata, create_hgt_model
 from paper_rag.models.losses import query_evidence_margin_loss, relation_info_nce
@@ -26,6 +27,7 @@ def build_query_pairs(
     output: str | Path,
     *,
     embeddings_path: str | Path | None = None,
+    hard_negatives: bool = True,
     seed: int = 42,
 ) -> Path:
     graph = load_graph(graph_path)
@@ -34,10 +36,15 @@ def build_query_pairs(
     rows = []
     for sample in read_jsonl(samples_path):
         positives = [node_id for node_id in sample["relevant_node_ids"] if node_id in graph.nodes]
+        paper_ids = {str(value) for value in sample.get("paper_ids", [])}
+        if sample.get("paper_id") is not None:
+            paper_ids.add(str(sample["paper_id"]))
+        if not paper_ids:
+            paper_ids.update(graph.nodes[node_id].paper_id for node_id in positives)
         candidates = sample.get("candidate_node_ids") or [
             node_id
             for node_id, node in graph.nodes.items()
-            if node.paper_id == str(sample["paper_id"])
+            if node.paper_id in paper_ids
         ]
         negatives = [node_id for node_id in candidates if node_id not in positives]
         if not positives or not negatives:
@@ -51,7 +58,7 @@ def build_query_pairs(
             pool = same_type or negatives
             negative = (
                 max(pool, key=lambda node_id: _similarity(embeddings, positive, node_id))
-                if positive in embeddings
+                if hard_negatives and positive in embeddings
                 else rng.choice(pool)
             )
             rows.append(
@@ -101,7 +108,9 @@ def train_hgt(
     output: str | Path,
     *,
     epochs: int = 20,
+    batch_size: int = 16,
     learning_rate: float = 1e-3,
+    query_weight: float = 1.0,
     relation_weight: float = 0.2,
     seed: int = 42,
     device: str = "cuda",
@@ -115,25 +124,24 @@ def train_hgt(
     np.random.seed(seed)
     torch.manual_seed(seed)
     graph = load_graph(graph_path)
-    base_embeddings = _load_npz(base_embeddings_path)
-    query_embeddings = _load_npz(query_embeddings_path)
+    _validate_paper_local_edges(graph)
+    paper_index = _paper_graph_index(graph)
     samples = read_jsonl(query_pairs_path)
     if not samples:
         raise ValueError("No trainable query pairs were produced")
-    input_dimension = int(next(iter(base_embeddings.values())).shape[-1])
-    logger.info("Preparing HGT graph and model: nodes=%d device=%s", len(graph.nodes), device)
-    data, ids_by_type = build_heterodata(graph, base_embeddings, add_reverse_edges=True)
-    data = data.to(device)
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    if query_weight <= 0 and relation_weight <= 0:
+        raise ValueError("At least one training loss weight must be positive")
+    base_embeddings = np.load(base_embeddings_path)
+    query_embeddings = np.load(query_embeddings_path)
+    input_dimension = int(base_embeddings[base_embeddings.files[0]].shape[-1])
+    logger.info("Preparing batched HGT model: nodes=%d device=%s", len(graph.nodes), device)
     model = create_hgt_model(
-        data.metadata(),
+        _graph_metadata(graph),
         HGTConfig(input_dimension, hidden_dimension, layers, heads),
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
-    positions = {
-        node_id: (node_type, index)
-        for node_type, node_ids in ids_by_type.items()
-        for index, node_id in enumerate(node_ids)
-    }
     train_papers = {graph.nodes[row["positive_node_id"]].paper_id for row in samples}
     relations = _relation_triples(graph, train_papers, seed)
     logger.info(
@@ -144,27 +152,55 @@ def train_hgt(
         epochs,
         device,
     )
-    query_tensor = torch.from_numpy(
-        np.stack([query_embeddings[row["query_id"]] for row in samples]).astype(np.float32)
-    ).to(device)
 
     for epoch in range(epochs):
         model.train()
-        optimizer.zero_grad()
-        hidden = model.encode_graph(data.x_dict, data.edge_index_dict)
-        query_hidden = model.encode_query(query_tensor)
-        positives = _sample_nodes(hidden, positions, samples, "positive_node_id")
-        negatives = _sample_nodes(hidden, positions, samples, "negative_node_id")
-        loss = query_evidence_margin_loss(query_hidden, positives, negatives)
-        if relations:
-            anchors = _triple_nodes(hidden, positions, relations, 0)
-            related = _triple_nodes(hidden, positions, relations, 1)
-            unrelated = _triple_nodes(hidden, positions, relations, 2)
-            loss += relation_weight * relation_info_nce(anchors, related, unrelated[:, None, :])
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        logger.info("HGT epoch %d/%d loss=%.6f", epoch + 1, epochs, float(loss.detach().cpu()))
+        order = list(range(len(samples)))
+        random.Random(seed + epoch).shuffle(order)
+        epoch_loss = 0.0
+        for start in range(0, len(order), batch_size):
+            batch = [samples[index] for index in order[start : start + batch_size]]
+            papers = _pair_papers(graph, batch)
+            batch_graph = _paper_subgraph(graph, papers, index=paper_index)
+            data, ids_by_type = build_heterodata(batch_graph, base_embeddings)
+            data = data.to(device)
+            positions = _node_positions(ids_by_type)
+            optimizer.zero_grad()
+            hidden = model.encode_graph(data.x_dict, data.edge_index_dict)
+            loss = None
+            if query_weight > 0:
+                query_tensor = torch.from_numpy(
+                    np.stack([query_embeddings[row["query_id"]] for row in batch]).astype(
+                        np.float32
+                    )
+                ).to(device)
+                query_hidden = model.encode_query(query_tensor)
+                positives = _sample_nodes(hidden, positions, batch, "positive_node_id")
+                negatives = _sample_nodes(hidden, positions, batch, "negative_node_id")
+                loss = query_weight * query_evidence_margin_loss(
+                    query_hidden, positives, negatives
+                )
+            batch_relations = _relation_triples(batch_graph, papers, seed + epoch + start)
+            if relation_weight > 0 and batch_relations:
+                anchors = _triple_nodes(hidden, positions, batch_relations, 0)
+                related = _triple_nodes(hidden, positions, batch_relations, 1)
+                unrelated = _triple_nodes(hidden, positions, batch_relations, 2)
+                relation_loss = relation_weight * relation_info_nce(
+                    anchors, related, unrelated[:, None, :]
+                )
+                loss = relation_loss if loss is None else loss + relation_loss
+            if loss is None:
+                continue
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            epoch_loss += float(loss.detach().cpu()) * len(batch)
+        logger.info(
+            "HGT epoch %d/%d loss=%.6f",
+            epoch + 1,
+            epochs,
+            epoch_loss / len(samples),
+        )
 
     metadata = {
         "graph_sha256": hashlib.sha256(Path(graph_path).read_bytes()).hexdigest(),
@@ -176,9 +212,22 @@ def train_hgt(
         "layers": layers,
         "heads": heads,
         "epochs": epochs,
+        "batch_size": batch_size,
+        "query_weight": query_weight,
+        "relation_weight": relation_weight,
         "seed": seed,
     }
-    artifacts = _export_hgt(model, data, ids_by_type, output, metadata)
+    artifacts = _export_hgt(
+        model,
+        graph,
+        base_embeddings,
+        output,
+        metadata,
+        paper_index=paper_index,
+        paper_batch_size=batch_size,
+    )
+    base_embeddings.close()
+    query_embeddings.close()
     logger.info("HGT artifacts ready: %s", artifacts)
     return artifacts
 
@@ -228,6 +277,10 @@ def _relation_triples(
     return triples
 
 
+def count_relation_triples(graph, paper_ids: set[str]) -> int:
+    return len(_relation_triples(graph, paper_ids, seed=0))
+
+
 def _sample_nodes(hidden, positions, samples, key):
     import torch
 
@@ -244,19 +297,109 @@ def _triple_nodes(hidden, positions, triples, index):
     )
 
 
-def _export_hgt(model, data, ids_by_type, output: str | Path, metadata: dict) -> Path:
+def _graph_metadata(graph: EvidenceGraph) -> tuple[list[str], list[tuple[str, str, str]]]:
+    node_types = sorted({node.node_type.value for node in graph.nodes.values()})
+    edge_types: set[tuple[str, str, str]] = set()
+    for edge in graph.edges:
+        source = graph.nodes[edge.src].node_type.value
+        target = graph.nodes[edge.dst].node_type.value
+        edge_types.add((source, edge.relation.value, target))
+        edge_types.add((target, f"rev_{edge.relation.value}", source))
+    return node_types, sorted(edge_types)
+
+
+def _validate_paper_local_edges(graph: EvidenceGraph) -> None:
+    if any(
+        graph.nodes[edge.src].paper_id != graph.nodes[edge.dst].paper_id
+        for edge in graph.edges
+    ):
+        raise ValueError("Batched HGT requires all evidence edges to stay within one paper")
+
+
+def _pair_papers(graph: EvidenceGraph, samples: list[dict]) -> set[str]:
+    return {
+        graph.nodes[row[key]].paper_id
+        for row in samples
+        for key in ("positive_node_id", "negative_node_id")
+    }
+
+
+def _paper_graph_index(
+    graph: EvidenceGraph,
+) -> tuple[dict[str, list[str]], dict[str, list[EvidenceEdge]]]:
+    nodes: dict[str, list[str]] = defaultdict(list)
+    edges: dict[str, list[EvidenceEdge]] = defaultdict(list)
+    for node_id, node in graph.nodes.items():
+        nodes[node.paper_id].append(node_id)
+    for edge in graph.edges:
+        edges[graph.nodes[edge.src].paper_id].append(edge)
+    return dict(nodes), dict(edges)
+
+
+def _paper_subgraph(
+    graph: EvidenceGraph,
+    paper_ids: set[str],
+    *,
+    index: tuple[dict[str, list[str]], dict[str, list[EvidenceEdge]]] | None = None,
+) -> EvidenceGraph:
+    nodes_by_paper, edges_by_paper = index or _paper_graph_index(graph)
+    result = EvidenceGraph()
+    result.extend(
+        (
+            graph.nodes[node_id]
+            for paper_id in paper_ids
+            for node_id in nodes_by_paper.get(paper_id, ())
+        ),
+        (
+            edge
+            for paper_id in paper_ids
+            for edge in edges_by_paper.get(paper_id, ())
+        ),
+    )
+    return result
+
+
+def _node_positions(ids_by_type):
+    return {
+        node_id: (node_type, index)
+        for node_type, node_ids in ids_by_type.items()
+        for index, node_id in enumerate(node_ids)
+    }
+
+
+def _export_hgt(
+    model,
+    graph: EvidenceGraph,
+    base_embeddings,
+    output: str | Path,
+    metadata: dict,
+    *,
+    paper_index: tuple[dict[str, list[str]], dict[str, list[EvidenceEdge]]],
+    paper_batch_size: int,
+) -> Path:
     import torch
 
     root = Path(output)
     root.mkdir(parents=True, exist_ok=True)
     model.eval()
-    with torch.no_grad():
-        hidden = model.encode_graph(data.x_dict, data.edge_index_dict)
-    ordered = [
-        (node_id, hidden[node_type][index].float().cpu().numpy())
-        for node_type in sorted(ids_by_type)
-        for index, node_id in enumerate(ids_by_type[node_type])
-    ]
+    papers = sorted({node.paper_id for node in graph.nodes.values()})
+    ordered = []
+    device = next(model.parameters()).device
+    for start in range(0, len(papers), paper_batch_size):
+        batch_graph = _paper_subgraph(
+            graph,
+            set(papers[start : start + paper_batch_size]),
+            index=paper_index,
+        )
+        data, ids_by_type = build_heterodata(batch_graph, base_embeddings)
+        data = data.to(device)
+        with torch.no_grad():
+            hidden = model.encode_graph(data.x_dict, data.edge_index_dict)
+        ordered.extend(
+            (node_id, hidden[node_type][index].float().cpu().numpy())
+            for node_type in sorted(ids_by_type)
+            for index, node_id in enumerate(ids_by_type[node_type])
+        )
     np.save(root / "graph_embeddings.npy", np.stack([vector for _, vector in ordered]))
     (root / "node_ids.json").write_text(
         json.dumps([node_id for node_id, _ in ordered], ensure_ascii=False),

@@ -3,7 +3,12 @@ import numpy as np
 from paper_rag.benchmarking.base import read_jsonl, write_jsonl
 from paper_rag.domain import EvidenceNode, NodeType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
-from paper_rag.training import build_query_pairs
+from paper_rag.training import (
+    _pair_papers,
+    _paper_graph_index,
+    _paper_subgraph,
+    build_query_pairs,
+)
 
 
 def test_query_pairs_choose_same_type_hard_negative(tmp_path) -> None:
@@ -79,3 +84,114 @@ def test_query_pairs_keep_all_gold_evidence(tmp_path) -> None:
     output = build_query_pairs(graph_path, samples, tmp_path / "pairs.jsonl")
 
     assert {row["positive_node_id"] for row in read_jsonl(output)} == {"p:a", "p:b"}
+
+
+def test_query_pairs_infer_candidates_from_gold_papers(tmp_path) -> None:
+    graph = EvidenceGraph()
+    graph.extend(
+        [
+            EvidenceNode("p:gold", "p", NodeType.FIGURE, image_path="gold.png"),
+            EvidenceNode("p:negative", "p", NodeType.FIGURE, image_path="negative.png"),
+            EvidenceNode("other:node", "other", NodeType.FIGURE, image_path="other.png"),
+        ],
+        [],
+    )
+    graph_path = tmp_path / "graph.json"
+    save_graph(graph, graph_path)
+    samples = write_jsonl(
+        tmp_path / "train.jsonl",
+        [
+            {
+                "query_id": "q",
+                "query": "question",
+                "relevant_node_ids": ["p:gold"],
+            }
+        ],
+    )
+
+    output = build_query_pairs(graph_path, samples, tmp_path / "pairs.jsonl")
+
+    assert read_jsonl(output)[0]["negative_node_id"] == "p:negative"
+
+
+def test_query_pairs_support_random_negative_ablation(tmp_path) -> None:
+    graph = EvidenceGraph()
+    graph.extend(
+        [
+            EvidenceNode("p:gold", "p", NodeType.SENTENCE, text="gold"),
+            EvidenceNode("p:hard", "p", NodeType.SENTENCE, text="hard"),
+            EvidenceNode("p:easy", "p", NodeType.SENTENCE, text="easy"),
+        ],
+        [],
+    )
+    graph_path = tmp_path / "graph.json"
+    save_graph(graph, graph_path)
+    samples = write_jsonl(
+        tmp_path / "train.jsonl",
+        [{
+            "query_id": "q",
+            "query": "question",
+            "paper_id": "p",
+            "relevant_node_ids": ["p:gold"],
+            "candidate_node_ids": ["p:gold", "p:hard", "p:easy"],
+        }],
+    )
+    embeddings = tmp_path / "base.npz"
+    np.savez_compressed(
+        embeddings,
+        **{
+            "p:gold": np.array([1.0, 0.0]),
+            "p:hard": np.array([0.9, 0.1]),
+            "p:easy": np.array([0.0, 1.0]),
+        },
+    )
+
+    output = build_query_pairs(
+        graph_path,
+        samples,
+        tmp_path / "pairs.jsonl",
+        embeddings_path=embeddings,
+        hard_negatives=False,
+        seed=0,
+    )
+
+    assert read_jsonl(output)[0]["negative_node_id"] == "p:easy"
+
+
+def test_paper_subgraph_excludes_other_papers() -> None:
+    graph = EvidenceGraph()
+    graph.extend(
+        [
+            EvidenceNode("a:1", "a", NodeType.SENTENCE, text="a1"),
+            EvidenceNode("a:2", "a", NodeType.SENTENCE, text="a2"),
+            EvidenceNode("b:1", "b", NodeType.SENTENCE, text="b1"),
+        ],
+        [],
+    )
+
+    subgraph = _paper_subgraph(graph, {"a"}, index=_paper_graph_index(graph))
+
+    assert set(subgraph.nodes) == {"a:1", "a:2"}
+
+
+def test_training_batch_includes_negative_papers() -> None:
+    graph = EvidenceGraph()
+    graph.extend(
+        [
+            EvidenceNode("a:positive", "a", NodeType.SENTENCE, text="positive"),
+            EvidenceNode("b:negative", "b", NodeType.SENTENCE, text="negative"),
+        ],
+        [],
+    )
+    pairs = [
+        {
+            "positive_node_id": "a:positive",
+            "negative_node_id": "b:negative",
+        }
+    ]
+
+    papers = _pair_papers(graph, pairs)
+    subgraph = _paper_subgraph(graph, papers, index=_paper_graph_index(graph))
+
+    assert papers == {"a", "b"}
+    assert set(subgraph.nodes) == {"a:positive", "b:negative"}

@@ -105,9 +105,7 @@ class QuerySpec:
     value: float | None = None
     unit: str | None = None
     conditions: list[str] = field(default_factory=list)
-    required_modalities: list[str] = field(
-        default_factory=lambda: ["text", "figure", "table"]
-    )
+    required_modalities: list[str] = field(default_factory=list)
 
     @property
     def required_slots(self) -> set[str]:

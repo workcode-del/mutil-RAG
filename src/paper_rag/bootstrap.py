@@ -177,5 +177,8 @@ def build_retriever_config(config: dict) -> ECBFRConfig:
         image_unit=int(retrieve_config["budget"]["image_unit"]),
         candidate_hops=int(retrieve_config["candidate_hops"]),
         lambda_values=tuple(float(x) for x in retrieve_config["lambda_values"]),
+        slot_weight=float(retrieve_config.get("slot_weight", 0.4)),
+        entity_weight=float(retrieve_config.get("entity_weight", 0.0)),
+        redundancy_weight=float(retrieve_config.get("redundancy_weight", 0.2)),
         relation_costs=relation_costs or None,
     )

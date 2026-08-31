@@ -18,7 +18,7 @@ class ECBFRConfig:
     min_edge_confidence: float = 0.8
     lambda_values: tuple[float, ...] = (0.5, 1.0, 2.0)
     slot_weight: float = 0.4
-    entity_weight: float = 0.3
+    entity_weight: float = 0.0
     redundancy_weight: float = 0.2
     relation_costs: dict | None = field(default_factory=lambda: dict(DEFAULT_RELATION_COSTS))
 

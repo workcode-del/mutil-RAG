@@ -8,6 +8,9 @@ from typing import Any
 from paper_rag.io import read_jsonl, write_json, write_jsonl
 
 
+PROCESSED_SCHEMA_VERSION = 2
+
+
 @dataclass(frozen=True, slots=True)
 class BenchmarkLayout:
     name: str
@@ -61,6 +64,78 @@ def grouped_split(
         else:
             split = "test"
         result[split].append(row)
+    return result
+
+
+def connected_grouped_split(
+    rows: list[dict[str, Any]],
+    *,
+    members_key: str = "paper_ids",
+    train_percent: int = 70,
+    dev_percent: int = 15,
+) -> dict[str, list[dict[str, Any]]]:
+    """Keep rows connected through any shared document in the same split."""
+    if train_percent < 1 or dev_percent < 1 or train_percent + dev_percent >= 100:
+        raise ValueError("Invalid grouped split percentages")
+    parent = list(range(len(rows)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    owner: dict[str, int] = {}
+    for index, row in enumerate(rows):
+        members = {str(value) for value in row.get(members_key, [])}
+        if not members and row.get("paper_id") is not None:
+            members.add(str(row["paper_id"]))
+        for member in members:
+            if member in owner:
+                union(index, owner[member])
+            else:
+                owner[member] = index
+
+    component_members: dict[int, set[str]] = {}
+    for member, index in owner.items():
+        component_members.setdefault(find(index), set()).add(member)
+    components: dict[str, list[dict[str, Any]]] = {}
+    for index, row in enumerate(rows):
+        root = find(index)
+        component = "\0".join(sorted(component_members.get(root, {f"row:{index}"})))
+        components.setdefault(component, []).append(row)
+
+    names = ("train", "dev", "test")
+    percentages = (train_percent, dev_percent, 100 - train_percent - dev_percent)
+    targets = {name: len(rows) * percent / 100 for name, percent in zip(names, percentages)}
+    result: dict[str, list[dict[str, Any]]] = {name: [] for name in names}
+    ordered = sorted(
+        components.items(),
+        key=lambda item: (-len(item[1]), hashlib.sha1(item[0].encode()).hexdigest()),
+    )
+    require_nonempty = len(ordered) >= len(names)
+    for position, (_, component_rows) in enumerate(ordered):
+        remaining = len(ordered) - position - 1
+        eligible = [
+            name
+            for name in names
+            if not require_nonempty
+            or sum(not result[other] for other in names if other != name) <= remaining
+        ]
+        chosen = min(
+            eligible,
+            key=lambda name: (
+                (len(result[name]) + len(component_rows) - targets[name]) ** 2
+                - (len(result[name]) - targets[name]) ** 2,
+                names.index(name),
+            ),
+        )
+        result[chosen].extend(component_rows)
     return result
 
 

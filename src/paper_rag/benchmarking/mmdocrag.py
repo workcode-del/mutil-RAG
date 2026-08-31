@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from paper_rag.benchmarking.base import (
+    PROCESSED_SCHEMA_VERSION,
     BenchmarkLayout,
     grouped_split,
     read_jsonl,
@@ -63,6 +64,7 @@ def prepare_mmdocrag(
     write_jsonl(layout.samples("dev"), split["dev"] + split["test"])
     report = {
         "dataset": "mmdocrag",
+        "schema_version": PROCESSED_SCHEMA_VERSION,
         "graph_mode": "official_quote_candidates",
         "setting": setting,
         "development_samples": len(development_samples),

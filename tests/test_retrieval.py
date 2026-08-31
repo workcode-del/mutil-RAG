@@ -146,3 +146,9 @@ def test_forest_is_closed_and_budgeted() -> None:
 def test_rrf_does_not_depend_on_raw_score_scale() -> None:
     result = reciprocal_rank_fusion({"gme": ["a", "b"], "reranker": ["b", "a"]})
     assert result["a"] == result["b"]
+
+
+def test_gold_modality_metadata_is_not_a_selection_slot() -> None:
+    query = QuerySpec("figure", required_modalities=["figure"])
+
+    assert query.required_slots == {"answer"}

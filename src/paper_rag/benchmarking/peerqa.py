@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from paper_rag.benchmarking.base import (
+    PROCESSED_SCHEMA_VERSION,
     BenchmarkLayout,
     grouped_split,
     read_jsonl,
@@ -96,6 +97,7 @@ def prepare_peerqa(
     complete = not remaining_papers
     report = {
         "dataset": "peerqa",
+        "schema_version": PROCESSED_SCHEMA_VERSION,
         "graph_mode": (
             "official_sentences_plus_mineru_openreview"
             if pdf_manifest

@@ -25,6 +25,9 @@ reranker:
 retrieval:
   candidate_hops: 2
   lambda_values: [0.5, 1.0, 2.0]
+  slot_weight: 0.4
+  entity_weight: 0.0
+  redundancy_weight: 0.2
   budget:
     text_tokens: 4096
     image_unit: 512

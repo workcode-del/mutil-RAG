@@ -1,15 +1,51 @@
 import zipfile
 from pathlib import Path
 
-from paper_rag.benchmarking.base import BenchmarkLayout, grouped_split, write_json
+import numpy as np
+import pytest
+
+from paper_rag.benchmarking.base import (
+    PROCESSED_SCHEMA_VERSION,
+    BenchmarkLayout,
+    connected_grouped_split,
+    grouped_split,
+    write_json,
+)
 from paper_rag.benchmarking.cli import _ranking_cutoffs, _report_summaries
 from paper_rag.benchmarking.download import _valid_download, extract_zip
 from paper_rag.benchmarking.mmdocrag import _build_quote_graph, _sample, _string_list
 from paper_rag.benchmarking.multimodalqa import _component_graph, _samples
 from paper_rag.benchmarking.page_datasets import _mmlong_samples, _page_node_id
 from paper_rag.benchmarking.peerqa import _build_official_graph
-from paper_rag.benchmarking.runner import _validate_preparation
-from paper_rag.domain import NodeType
+from paper_rag.benchmarking.runner import (
+    _merge_embedding_archives,
+    _official_split,
+    _validate_preparation,
+    _validate_processed_schema,
+    _validate_training_split,
+    benchmark_split_statistics,
+)
+from paper_rag.benchmarking.spiqa import _convert_splits
+from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
+from paper_rag.evidence_graph import EvidenceGraph, save_graph
+from paper_rag.io import write_jsonl
+from paper_rag.training import count_relation_triples
+
+
+def test_joint_embedding_merge_streams_namespaced_entries(tmp_path) -> None:
+    first = tmp_path / "first.npz"
+    second = tmp_path / "second.npz"
+    np.savez_compressed(first, node=np.array([1.0, 0.0]))
+    np.savez_compressed(second, node=np.array([0.0, 1.0]))
+
+    output = _merge_embedding_archives(
+        [("first::", first), ("second::", second)],
+        tmp_path / "merged.npz",
+    )
+
+    with np.load(output) as archive:
+        assert set(archive.files) == {"first::node", "second::node"}
+        assert archive["first::node"].tolist() == [1.0, 0.0]
 
 
 def test_peerqa_official_rows_build_stable_nodes() -> None:
@@ -133,6 +169,43 @@ def test_grouped_split_keeps_documents_together() -> None:
         assert sum(row["paper_id"] == paper_id for items in split.values() for row in items) == 3
 
 
+def test_connected_split_keeps_shared_document_components_together() -> None:
+    rows = [
+        {"query_id": "q1", "paper_ids": ["a", "b"]},
+        {"query_id": "q2", "paper_ids": ["b", "c"]},
+        {"query_id": "q3", "paper_ids": ["d"]},
+    ]
+
+    split = connected_grouped_split(rows)
+    allocation = {
+        row["query_id"]: name for name, values in split.items() for row in values
+    }
+
+    assert allocation["q1"] == allocation["q2"]
+    documents_by_split = {
+        name: {paper for row in values for paper in row["paper_ids"]}
+        for name, values in split.items()
+    }
+    assert all(
+        not left_docs & right_docs
+        for left, left_docs in documents_by_split.items()
+        for right, right_docs in documents_by_split.items()
+        if left < right
+    )
+
+
+def test_connected_split_uses_all_splits_when_possible() -> None:
+    rows = [
+        {"query_id": f"q{index}", "paper_ids": [f"p{index}"]}
+        for index in range(12)
+    ]
+
+    split = connected_grouped_split(rows)
+
+    assert all(split.values())
+    assert sum(map(len, split.values())) == len(rows)
+
+
 def test_mmdocrag_modality_metadata_accepts_scalar_or_list() -> None:
     assert _string_list("image") == ["image"]
     assert _string_list(["text", "image"]) == ["text", "image"]
@@ -145,6 +218,79 @@ def test_benchmark_cutoffs_are_dataset_specific() -> None:
     assert _ranking_cutoffs(None, "m3docvqa") == (1, 3, 5, 10)
     assert _ranking_cutoffs(None, "mmlongbench_doc") == (1, 3, 5, 10)
     assert _ranking_cutoffs(None, "multimodalqa") == (1, 3, 5, 10)
+    assert _ranking_cutoffs(None, "spiqa") == (1, 3, 5, 10)
+
+
+def test_spiqa_builds_figure_table_caption_graph_and_audits_missing_reference(
+    tmp_path,
+) -> None:
+    image_root = tmp_path / "images"
+    image_root.mkdir()
+    for name in (
+        "paper-Figure1-1.png",
+        "paper-Figure2-1.png",
+        "paper-Table1-1.png",
+    ):
+        (image_root / name).write_bytes(b"\x89PNG\r\n\x1a\nvalid-test-stub")
+    paper = {
+        "paper_id": "paper",
+        "all_figures": {
+            "paper-Figure1-1.png": {
+                "caption": "A result plot.",
+                "content_type": "figure",
+                "figure_type": "plot",
+            },
+            "paper-Table1-1.png": {
+                "caption": "Main results.",
+                "content_type": "table",
+                "figure_type": "table",
+            },
+            "paper-Figure2-1.png": {
+                "caption": "A comparison plot.",
+                "content_type": "figure",
+                "figure_type": "plot",
+            },
+        },
+        "qa": [
+            {
+                "question": "Which plot is relevant?",
+                "answer": "Figure 1",
+                "reference": "paper-Figure1-1.png",
+            },
+            {
+                "question": "Which table is relevant?",
+                "answer": "Table 1",
+                "reference": "paper-Table1-1.png",
+            },
+            {
+                "question": "Which reference is absent?",
+                "answer": "Missing",
+                "reference": "paper-Figure9-1.png",
+            },
+        ],
+    }
+
+    graph, samples, audit = _convert_splits(
+        {"train": {"paper": paper}}, {"train": image_root}
+    )
+
+    assert len(samples["train"]) == 2
+    assert {node.node_type for node in graph.nodes.values()} == {
+        NodeType.FIGURE,
+        NodeType.TABLE,
+        NodeType.CAPTION,
+    }
+    assert sum(edge.relation is RelationType.CAPTION_OF for edge in graph.edges) == 3
+    assert count_relation_triples(graph, {"paper"}) == 2
+    assert _official_split("spiqa") == "test"
+    assert samples["train"][0]["required_modalities"] == ["figure"]
+    assert samples["train"][1]["required_modalities"] == ["table"]
+    assert all(
+        set(sample["relevant_node_ids"]).issubset(sample["candidate_node_ids"])
+        for sample in samples["train"]
+    )
+    assert not audit["missing_images"]
+    assert audit["missing_evidence"] == ["spiqa::train::paper::2:paper-Figure9-1.png"]
 
 
 def test_multimodalqa_imports_text_table_image_components(tmp_path) -> None:
@@ -209,6 +355,9 @@ def test_multimodalqa_imports_text_table_image_components(tmp_path) -> None:
     }
     assert samples[0]["required_modalities"] == ["table", "image"]
     assert len(samples[0]["relevant_node_ids"]) == 2
+    assert samples[0]["split_group_ids"] == ["Paper A"]
+    assert "paper_ids" not in samples[0]
+    assert "candidate_node_ids" not in samples[0]
     assert next(
         node for node in graph.nodes.values() if node.node_type is NodeType.TABLE
     ).image_path.endswith("figure.png")
@@ -302,6 +451,113 @@ def test_prepare_console_report_summarizes_details() -> None:
         "download_errors_count": 1,
         "parse_errors_count": 0,
     }
+
+
+def test_training_report_counts_splits_and_relation_triples(tmp_path) -> None:
+    layout = BenchmarkLayout.create("dataset", tmp_path)
+    graph = EvidenceGraph()
+    graph.extend(
+        [
+            EvidenceNode("train:a", "train", NodeType.SENTENCE, text="a"),
+            EvidenceNode("train:b", "train", NodeType.SENTENCE, text="b"),
+            EvidenceNode("train:c", "train", NodeType.SENTENCE, text="c"),
+            EvidenceNode("dev:a", "dev", NodeType.TABLE, text="table"),
+            EvidenceNode("test:a", "test", NodeType.FIGURE, image_path="test.png"),
+        ],
+        [EvidenceEdge("train:a", "train:b", RelationType.NEXT_SENTENCE)],
+    )
+    save_graph(graph, layout.graph)
+    for split, paper, candidates in (
+        ("train", "train", ["train:a", "train:b", "train:c"]),
+        ("dev", "dev", ["dev:a"]),
+        ("test", "test", ["test:a"]),
+    ):
+        write_jsonl(
+            layout.samples(split),
+            [
+                {
+                    "query_id": split,
+                    "paper_id": paper,
+                    "query": split,
+                    "relevant_node_ids": candidates[:1],
+                    "candidate_node_ids": candidates,
+                }
+            ],
+        )
+
+    statistics = benchmark_split_statistics(layout)
+
+    assert statistics["train"] == {
+        "questions": 1,
+        "papers": 1,
+        "nodes": 3,
+        "node_type_count": 1,
+        "node_types": {"Sentence": 3},
+        "relation_type_count": 1,
+        "relation_types": {"next_sentence": 1},
+        "relation_triples": 1,
+    }
+    assert statistics["dev"]["node_types"] == {"Table": 1}
+    assert statistics["test"]["node_types"] == {"Figure": 1}
+    _validate_training_split(layout)
+
+
+def test_training_rejects_test_candidate_leakage(tmp_path) -> None:
+    layout = BenchmarkLayout.create("dataset", tmp_path)
+    graph = EvidenceGraph()
+    graph.add_node(EvidenceNode("shared", "paper", NodeType.SENTENCE, text="shared"))
+    save_graph(graph, layout.graph)
+    row = {
+        "paper_id": "paper",
+        "query": "question",
+        "relevant_node_ids": ["shared"],
+        "candidate_node_ids": ["shared"],
+    }
+    write_jsonl(layout.samples("train"), [{**row, "query_id": "train"}])
+    write_jsonl(layout.samples("test"), [{**row, "query_id": "test"}])
+
+    try:
+        _validate_training_split(layout)
+    except ValueError as error:
+        assert "candidate nodes overlap" in str(error)
+    else:
+        raise AssertionError("Train/test candidate leakage was accepted")
+
+
+def test_processed_schema_rejects_stale_artifacts(tmp_path) -> None:
+    layout = BenchmarkLayout.create("dataset", tmp_path)
+    graph = EvidenceGraph()
+    graph.add_node(EvidenceNode("p:s", "p", NodeType.SENTENCE, text="answer"))
+    save_graph(graph, layout.graph)
+    write_json(layout.processed / "prepare_report.json", {"dataset": "dataset"})
+
+    with pytest.raises(RuntimeError, match="Prepare dataset again"):
+        _validate_processed_schema(layout)
+
+    write_json(
+        layout.processed / "prepare_report.json",
+        {"dataset": "dataset", "schema_version": PROCESSED_SCHEMA_VERSION},
+    )
+    write_jsonl(
+        layout.samples("train"),
+        [{"query_id": "q", "query": "question", "relevant_node_ids": ["p:s"]}],
+    )
+    _validate_processed_schema(layout)
+
+
+def test_training_rejects_empty_held_out_split(tmp_path) -> None:
+    layout = BenchmarkLayout.create("dataset", tmp_path)
+    graph = EvidenceGraph()
+    graph.add_node(EvidenceNode("p:s", "p", NodeType.SENTENCE, text="answer"))
+    save_graph(graph, layout.graph)
+    write_jsonl(
+        layout.samples("train"),
+        [{"query_id": "q", "query": "question", "relevant_node_ids": ["p:s"]}],
+    )
+    write_jsonl(layout.samples("dev"), [])
+
+    with pytest.raises(ValueError, match="dev split is empty"):
+        _validate_training_split(layout)
 
 
 def test_zip_validation_rejects_html_cache(tmp_path) -> None:

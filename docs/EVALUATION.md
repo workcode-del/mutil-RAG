@@ -37,6 +37,7 @@ paper-rag benchmark run --datasets peerqa mmdocrag --root data/benchmarks \
 | M3DocVQA | open-domain PDF 页面 | 1/3/5/10 | 用户提供官方/LILaC 快照 |
 | MMLongBench-Doc | 单文档页面，支持多页 gold | 1/3/5/10 | 官方问题与 PDF |
 | MultimodalQA | open-domain text/table/image 组件 | 1/3/5/10 | LILaC 指定的官方快照 |
+| SPIQA | 论文内 figure/table 图像；test-A 为官方测试 | 1/3/5/10 | 官方 Hugging Face 数据集 |
 
 显式 `--ranking-k` 覆盖默认值。`comparison.csv` 导出整体与 Sentence/Figure/Table 分模态 Recall、Evidence F1、结构、预算和延迟指标。
 
@@ -62,6 +63,19 @@ MultimodalQA 默认下载 `JoohyungYun/multimodalqa_doc`，读取 `QAs_dev_label
 paper-rag benchmark prepare --datasets multimodalqa --root data/benchmarks
 ```
 
+SPIQA 使用官方 train、val、test-A 划分；`--split official` 固定映射到 test-A，test-A 不参与 HGT 训练。每篇论文的 figure/table 是公平候选集，caption 单独建点，并且只添加数据明确给出的 `caption_of`：
+
+```bash
+paper-rag benchmark prepare --datasets spiqa --root data/benchmarks
+paper-rag benchmark train --datasets spiqa --root data/benchmarks \
+  --config configs/default.yaml
+paper-rag benchmark run --datasets spiqa --root data/benchmarks \
+  --config configs/default.yaml --split official --systems dense full \
+  --hgt-artifacts outputs/benchmark_hgt
+```
+
+官方 train/val 图片压缩包约 32 GB，诊断时可先下载并解压所需子集，再通过 `--dataset-source "spiqa=/data/SPIQA"` 指向本地快照。SPIQA 能直接验证 QA→Figure/Table 检索监督和 `caption_of` 关系监督；它没有正文句子到图表的人工 `refers_to` 标注，因此本评测不会构造该关系，也不能单独证明正文引用关系学习有效。
+
 M3DocVQA 官方语料需要动态构造，因此不静默使用第三方镜像。输入快照需包含 `M3DocVQA_dev_labeled.json` 与 `pdf_pages/dev`：
 
 ```bash
@@ -72,6 +86,13 @@ paper-rag benchmark prepare --datasets m3docvqa \
 M3DocVQA 与 MMLongBench-Doc 的官方检索单位是整页，所以页面建为 Figure；`required_modalities` 只记录证据来源，不能据此把整页虚构成 Table。Table 的直接分模态评测来自 MultimodalQA 组件或 MinerU 全文图。
 
 新增集合目前使用 dev/all 标注；无训练方法的 `--split official` 对应 `all`。训练 HGT 后必须报告内部 held-out test，并通过训练/评测 query 重叠检查。
+
+跨数据集共享 HGT 可使用 `--joint-training`；每个数据集仍只读取自己的 train split，节点 ID 在合并图中带数据集命名空间，产物按数据集分别导出：
+
+```bash
+paper-rag benchmark train --datasets peerqa spiqa --joint-training \
+  --root data/benchmarks --config configs/default.yaml
+```
 
 ## 2. 自定义数据
 
@@ -89,7 +110,7 @@ M3DocVQA 与 MMLongBench-Doc 的官方检索单位是整页，所以页面建为
 }
 ```
 
-`query` 和非空 `relevant_node_ids` 必需。`paper_id/paper_ids` 限制论文范围，`candidate_node_ids` 进一步限制候选且必须包含全部 gold；`answer` 只在启用生成时使用。
+`query` 和非空 `relevant_node_ids` 必需。`paper_id/paper_ids` 限制论文范围，`candidate_node_ids` 进一步限制候选且必须包含全部 gold；`answer` 只在启用生成时使用。`required_modalities` 是用于分层报告的 gold 元数据，不参与检索选择或 EC-BFR 槽位评分，避免把答案模态泄漏给某一种方法。
 
 建立索引并运行单次实验：
 

@@ -6,7 +6,12 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from paper_rag.benchmarking.base import BenchmarkLayout, grouped_split, safe_name
+from paper_rag.benchmarking.base import (
+    PROCESSED_SCHEMA_VERSION,
+    BenchmarkLayout,
+    connected_grouped_split,
+    safe_name,
+)
 from paper_rag.benchmarking.download import valid_image_file
 from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
@@ -39,11 +44,12 @@ def prepare_multimodalqa(
     samples, missing_evidence = _samples(rows, evidence_index)
     save_graph(graph, layout.graph)
     write_jsonl(layout.samples("all"), samples)
-    split = grouped_split(samples, group_key="query_id")
+    split = connected_grouped_split(samples, members_key="split_group_ids")
     for name, values in split.items():
         write_jsonl(layout.samples(name), values)
     report = {
         "dataset": "multimodalqa",
+        "schema_version": PROCESSED_SCHEMA_VERSION,
         "graph_mode": "official_component_graph",
         "evaluation_scope": "official_all_papers",
         "samples": len(samples),
@@ -143,13 +149,16 @@ def _samples(
     rows: list[dict[str, Any]], index: dict[tuple[str, str], str]
 ) -> tuple[list[dict[str, Any]], list[str]]:
     by_component: dict[str, list[str]] = defaultdict(list)
-    for (_, component_id), node_id in index.items():
+    paper_by_node: dict[str, str] = {}
+    for (title, component_id), node_id in index.items():
         by_component[component_id].append(node_id)
+        paper_by_node[node_id] = title
     samples: list[dict[str, Any]] = []
     missing: list[str] = []
     for row in rows:
         gold: list[str] = []
         modalities: list[str] = []
+        paper_ids: set[str] = set()
         complete = True
         for evidence in row.get("evidences", []):
             component_id = str(evidence.get("gold_component_id", ""))
@@ -162,6 +171,7 @@ def _samples(
                 complete = False
                 continue
             gold.append(node_id)
+            paper_ids.add(paper_by_node[node_id])
             modalities.append(str(evidence.get("mmqa_doc_modality", "text")))
         if not complete or not gold:
             continue
@@ -170,6 +180,7 @@ def _samples(
         samples.append(
             {
                 "query_id": f"multimodalqa::{row['qid']}",
+                "split_group_ids": sorted(paper_ids),
                 "query": str(row["question"]),
                 "answer": str(answer),
                 "relevant_node_ids": list(dict.fromkeys(gold)),

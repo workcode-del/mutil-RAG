@@ -6,7 +6,13 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from paper_rag.benchmarking.base import BenchmarkLayout, grouped_split, safe_name
+from paper_rag.benchmarking.base import (
+    PROCESSED_SCHEMA_VERSION,
+    BenchmarkLayout,
+    connected_grouped_split,
+    grouped_split,
+    safe_name,
+)
 from paper_rag.benchmarking.download import download_file, valid_image_file
 from paper_rag.domain import EvidenceNode, NodeType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
@@ -76,6 +82,7 @@ def prepare_mmlongbench_doc(
     save_graph(graph, layout.graph)
     report = {
         "dataset": "mmlongbench_doc",
+        "schema_version": PROCESSED_SCHEMA_VERSION,
         "graph_mode": "official_page_images",
         "evaluation_scope": "official_all_papers" if max_documents is None else "partial_documents",
         "samples": len(samples),
@@ -123,19 +130,22 @@ def prepare_m3docvqa(
             modalities.append(str(evidence.get("mmqa_doc_modality", "image")))
         if not gold or len(gold) != len(row.get("evidences", [])):
             continue
+        paper_ids = sorted({graph.nodes[node_id].paper_id for node_id in gold})
         samples.append(
             {
                 "query_id": f"m3docvqa::{row['qid']}",
+                "split_group_ids": paper_ids,
                 "query": str(row["question"]),
                 "answer": _first_answer(row),
                 "relevant_node_ids": list(dict.fromkeys(gold)),
                 "required_modalities": list(dict.fromkeys(modalities)),
             }
         )
-    _save_splits(layout, samples, group_key="query_id")
+    _save_splits(layout, samples, connected=True)
     save_graph(graph, layout.graph)
     report = {
         "dataset": "m3docvqa",
+        "schema_version": PROCESSED_SCHEMA_VERSION,
         "graph_mode": "official_open_domain_pages",
         "evaluation_scope": "official_all_papers",
         "samples": len(samples),
@@ -230,9 +240,19 @@ def _render_pdf(pdf: Path, output: Path) -> list[Path]:
     return paths
 
 
-def _save_splits(layout: BenchmarkLayout, rows: list[dict[str, Any]], *, group_key: str) -> None:
+def _save_splits(
+    layout: BenchmarkLayout,
+    rows: list[dict[str, Any]],
+    *,
+    group_key: str = "paper_id",
+    connected: bool = False,
+) -> None:
     write_jsonl(layout.samples("all"), rows)
-    split = grouped_split(rows, group_key=group_key)
+    split = (
+        connected_grouped_split(rows, members_key="split_group_ids")
+        if connected
+        else grouped_split(rows, group_key=group_key)
+    )
     for name, values in split.items():
         write_jsonl(layout.samples(name), values)
 

@@ -15,7 +15,6 @@ from paper_rag.benchmarking.runner import (
     SYSTEMS,
     run_benchmark,
     train_benchmark_index,
-    train_joint_benchmark_index,
 )
 
 
@@ -128,21 +127,10 @@ def _add_train_options(parser: argparse.ArgumentParser, *, optional: bool = Fals
         parser.add_argument("--config", default="configs/default.yaml")
         parser.add_argument("--reindex", action="store_true")
     parser.add_argument("--hgt-output-root", default="outputs/benchmark_hgt")
-    parser.add_argument(
-        "--joint-training",
-        action="store_true",
-        help="Train one shared HGT on each selected dataset's train split",
-    )
     parser.add_argument("--train-epochs", type=int, default=20)
     parser.add_argument("--train-batch-size", type=int, default=16)
     parser.add_argument("--train-learning-rate", type=float, default=1e-3)
-    parser.add_argument("--query-weight", type=float, default=1.0)
     parser.add_argument("--relation-weight", type=float, default=0.2)
-    parser.add_argument(
-        "--negative-sampling",
-        choices=("hard", "random"),
-        default="hard",
-    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
 
@@ -266,38 +254,20 @@ def _ranking_cutoffs(
 
 
 def _train(args: argparse.Namespace) -> dict[str, dict]:
-    layouts = [BenchmarkLayout.create(dataset, args.root) for dataset in args.datasets]
-    if args.joint_training:
-        return train_joint_benchmark_index(
-            layouts,
-            config_path=args.config,
-            output_root=args.hgt_output_root,
-            epochs=args.train_epochs,
-            batch_size=args.train_batch_size,
-            learning_rate=args.train_learning_rate,
-            query_weight=args.query_weight,
-            relation_weight=args.relation_weight,
-            hard_negatives=args.negative_sampling == "hard",
-            seed=args.seed,
-            device=args.device,
-            reindex=args.reindex,
-        )
     return {
         dataset: train_benchmark_index(
-            layout,
+            BenchmarkLayout.create(dataset, args.root),
             config_path=args.config,
             output=_dataset_artifacts(args.hgt_output_root, dataset),
             epochs=args.train_epochs,
             batch_size=args.train_batch_size,
             learning_rate=args.train_learning_rate,
-            query_weight=args.query_weight,
             relation_weight=args.relation_weight,
-            hard_negatives=args.negative_sampling == "hard",
             seed=args.seed,
             device=args.device,
             reindex=args.reindex,
         )
-        for dataset, layout in zip(args.datasets, layouts, strict=True)
+        for dataset in args.datasets
     }
 
 

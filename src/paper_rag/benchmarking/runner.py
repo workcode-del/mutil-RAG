@@ -3,11 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import shutil
-import zipfile
 from collections import Counter
 from dataclasses import dataclass
-from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -19,14 +16,13 @@ from paper_rag.benchmarking.base import (
     BenchmarkLayout,
     read_jsonl,
     write_json,
-    write_jsonl,
 )
 from paper_rag.bootstrap import build_deployed_pipeline, build_retriever_config
 from paper_rag.config import load_yaml
 from paper_rag.evaluation import evaluate, load_samples, save_report
 from paper_rag.evaluation.comparison import save_comparison
 from paper_rag.embedding import ExactEmbeddingStore
-from paper_rag.evidence_graph import EvidenceGraph, load_graph, save_graph
+from paper_rag.evidence_graph import EvidenceGraph, load_graph
 from paper_rag.models.cached_scorer import CachedHGTScorer
 from paper_rag.retrieval import build_evidence_retriever
 from paper_rag.training import (
@@ -190,7 +186,6 @@ def run_benchmark(
                     cutoffs=cutoffs,
                     per_type_top_k=per_type_top_k,
                     scope_to_sample_papers=not open_domain,
-                    scope_to_sample_candidates=not open_domain,
                     metadata=metadata,
                     query_vectors=query_vectors if pipeline.embedder else None,
                     query_embedding_ms=query_embedding_ms if pipeline.embedder else 0.0,
@@ -268,9 +263,7 @@ def train_benchmark_index(
     epochs: int = 20,
     batch_size: int = 16,
     learning_rate: float = 1e-3,
-    query_weight: float = 1.0,
     relation_weight: float = 0.2,
-    hard_negatives: bool = True,
     seed: int = 42,
     device: str = "cuda",
     reindex: bool = False,
@@ -286,7 +279,6 @@ def train_benchmark_index(
         layout.samples("train"),
         work / "query_pairs.jsonl",
         embeddings_path=layout.processed / "base_embeddings.npz",
-        hard_negatives=hard_negatives,
         seed=seed,
     )
     queries = embed_training_queries(
@@ -305,7 +297,6 @@ def train_benchmark_index(
         epochs=epochs,
         batch_size=batch_size,
         learning_rate=learning_rate,
-        query_weight=query_weight,
         relation_weight=relation_weight,
         seed=seed,
         device=device,
@@ -322,190 +313,6 @@ def train_benchmark_index(
     return {"dataset": layout.name, "artifacts": str(artifacts.resolve()), **metadata}
 
 
-def train_joint_benchmark_index(
-    layouts: list[BenchmarkLayout],
-    *,
-    config_path: str | Path,
-    output_root: str | Path,
-    epochs: int = 20,
-    batch_size: int = 16,
-    learning_rate: float = 1e-3,
-    query_weight: float = 1.0,
-    relation_weight: float = 0.2,
-    hard_negatives: bool = True,
-    seed: int = 42,
-    device: str = "cuda",
-    reindex: bool = False,
-) -> dict[str, Any]:
-    if len(layouts) < 2:
-        raise ValueError("Joint training requires at least two datasets")
-    output_root = Path(output_root)
-    work = output_root / "_joint"
-    merged_graph = EvidenceGraph()
-    embedding_sources: list[tuple[str, Path]] = []
-    merged_samples: list[dict[str, Any]] = []
-    statistics: dict[str, Any] = {}
-
-    for layout in layouts:
-        _validate_processed_schema(layout)
-        _validate_training_split(layout)
-        statistics[layout.name] = benchmark_split_statistics(layout)
-        ensure_dense_index(layout, config_path, force=reindex)
-        graph = load_graph(layout.graph)
-        prefix = f"{layout.name}::"
-        for node in graph.nodes.values():
-            merged_graph.add_node(
-                replace(
-                    node,
-                    node_id=prefix + node.node_id,
-                    paper_id=prefix + node.paper_id,
-                )
-            )
-        for edge in graph.edges:
-            merged_graph.add_edge(
-                replace(edge, src=prefix + edge.src, dst=prefix + edge.dst)
-            )
-        embedding_sources.append((prefix, layout.processed / "base_embeddings.npz"))
-        for sample in read_jsonl(layout.samples("train")):
-            converted = dict(sample)
-            converted["query_id"] = prefix + str(sample["query_id"])
-            converted["relevant_node_ids"] = [
-                prefix + str(node_id) for node_id in sample["relevant_node_ids"]
-            ]
-            if sample.get("candidate_node_ids") is not None:
-                converted["candidate_node_ids"] = [
-                    prefix + str(node_id) for node_id in sample["candidate_node_ids"]
-                ]
-            if sample.get("paper_id") is not None:
-                converted["paper_id"] = prefix + str(sample["paper_id"])
-            if sample.get("paper_ids") is not None:
-                converted["paper_ids"] = [
-                    prefix + str(paper_id) for paper_id in sample["paper_ids"]
-                ]
-            merged_samples.append(converted)
-
-    save_graph(merged_graph, work / "graph.json")
-    _merge_embedding_archives(embedding_sources, work / "base_embeddings.npz")
-    write_jsonl(work / "train.jsonl", merged_samples)
-    pairs = build_query_pairs(
-        work / "graph.json",
-        work / "train.jsonl",
-        work / "query_pairs.jsonl",
-        embeddings_path=work / "base_embeddings.npz",
-        hard_negatives=hard_negatives,
-        seed=seed,
-    )
-    queries = embed_training_queries(
-        pairs,
-        work / "query_embeddings.npz",
-        config_path,
-        batch_size=batch_size,
-    )
-    graph_config = load_yaml(config_path).get("graph_index", {})
-    combined_artifacts = train_hgt(
-        work / "graph.json",
-        work / "base_embeddings.npz",
-        pairs,
-        queries,
-        work / "artifacts",
-        epochs=epochs,
-        batch_size=batch_size,
-        learning_rate=learning_rate,
-        query_weight=query_weight,
-        relation_weight=relation_weight,
-        seed=seed,
-        device=device,
-        hidden_dimension=int(graph_config.get("hidden_dimension", 256)),
-        layers=int(graph_config.get("layers", 2)),
-        heads=int(graph_config.get("heads", 4)),
-    )
-    combined_metadata = json.loads(
-        (combined_artifacts / "training.json").read_text(encoding="utf-8")
-    )
-    combined_ids = json.loads(
-        (combined_artifacts / "node_ids.json").read_text(encoding="utf-8")
-    )
-    combined_matrix = np.load(combined_artifacts / "graph_embeddings.npy")
-    position = {node_id: index for index, node_id in enumerate(combined_ids)}
-    reports: dict[str, Any] = {}
-    dataset_names = [layout.name for layout in layouts]
-    for layout in layouts:
-        prefix = f"{layout.name}::"
-        graph = load_graph(layout.graph)
-        node_ids = list(graph.nodes)
-        target = output_root / layout.name
-        target.mkdir(parents=True, exist_ok=True)
-        np.save(
-            target / "graph_embeddings.npy",
-            np.stack([combined_matrix[position[prefix + node_id]] for node_id in node_ids]),
-        )
-        write_json(target / "node_ids.json", node_ids)
-        shutil.copy2(combined_artifacts / "query_projector.pt", target / "query_projector.pt")
-        train_ids = {
-            str(row["query_id"]) for row in read_jsonl(layout.samples("train"))
-        }
-        metadata = {
-            **combined_metadata,
-            "dataset": layout.name,
-            "joint_training": True,
-            "training_datasets": dataset_names,
-            "source_splits": {name: "train" for name in dataset_names},
-            "graph_sha256": hashlib.sha256(layout.graph.read_bytes()).hexdigest(),
-            "train_query_ids": sorted(train_ids),
-            "relation_triples": statistics[layout.name]["train"]["relation_triples"],
-            "split_statistics": statistics[layout.name],
-            "joint_split_statistics": statistics,
-        }
-        write_json(target / "training.json", metadata)
-        reports[layout.name] = {
-            "dataset": layout.name,
-            "artifacts": str(target.resolve()),
-            **metadata,
-        }
-    write_json(
-        output_root / "joint_training.json",
-        {
-            "training_datasets": dataset_names,
-            "source_splits": {name: "train" for name in dataset_names},
-            "split_statistics": statistics,
-            "combined_relation_triples": combined_metadata["relation_triples"],
-            "artifacts": {name: report["artifacts"] for name, report in reports.items()},
-        },
-    )
-    return reports
-
-
-def _merge_embedding_archives(
-    sources: list[tuple[str, Path]], output: str | Path
-) -> Path:
-    """Merge NPZ entries one at a time so joint training does not retain every vector in RAM."""
-    target = Path(output)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    names: set[str] = set()
-    with zipfile.ZipFile(
-        target,
-        "w",
-        compression=zipfile.ZIP_DEFLATED,
-        allowZip64=True,
-    ) as bundle:
-        for prefix, source in sources:
-            with np.load(source) as archive:
-                for key in archive.files:
-                    name = prefix + key
-                    if name in names:
-                        raise ValueError(f"Duplicate joint embedding ID: {name}")
-                    names.add(name)
-                    with bundle.open(f"{name}.npy", "w", force_zip64=True) as stream:
-                        np.lib.format.write_array(
-                            stream,
-                            np.asarray(archive[key]),
-                            allow_pickle=False,
-                        )
-    if not names:
-        raise ValueError("No embeddings were available for joint training")
-    return target
-
-
 def benchmark_split_statistics(layout: BenchmarkLayout) -> dict[str, Any]:
     graph = load_graph(layout.graph)
     result: dict[str, Any] = {}
@@ -520,12 +327,13 @@ def benchmark_split_statistics(layout: BenchmarkLayout) -> dict[str, Any]:
             paper_ids.update(str(value) for value in row.get("paper_ids", []))
             if row.get("paper_id") is not None:
                 paper_ids.add(str(row["paper_id"]))
-            node_ids.update(
+            row_nodes = {
                 str(value)
                 for value in row.get("candidate_node_ids", row["relevant_node_ids"])
                 if str(value) in graph.nodes
-            )
-            paper_ids.update(graph.nodes[node_id].paper_id for node_id in node_ids)
+            }
+            node_ids.update(row_nodes)
+            paper_ids.update(graph.nodes[node_id].paper_id for node_id in row_nodes)
         if paper_ids:
             node_ids.update(
                 node_id for node_id, node in graph.nodes.items() if node.paper_id in paper_ids
@@ -540,9 +348,7 @@ def benchmark_split_statistics(layout: BenchmarkLayout) -> dict[str, Any]:
             "questions": len(rows),
             "papers": len(paper_ids),
             "nodes": len(node_ids),
-            "node_type_count": len(node_counts),
             "node_types": dict(sorted(node_counts.items())),
-            "relation_type_count": len(relation_counts),
             "relation_types": dict(sorted(relation_counts.items())),
             "relation_triples": count_relation_triples(graph, paper_ids),
         }
@@ -558,11 +364,7 @@ def _validate_training_split(layout: BenchmarkLayout) -> None:
     if not train_rows:
         raise ValueError(f"{layout.name} train split is empty")
     train_queries = {str(row["query_id"]) for row in train_rows}
-    train_nodes = {
-        str(node_id)
-        for row in train_rows
-        for node_id in row.get("candidate_node_ids", row["relevant_node_ids"])
-    }
+    train_papers = _sample_papers(graph, train_rows)
     for split in ("dev", "test"):
         path = layout.samples(split)
         if not path.exists():
@@ -571,16 +373,9 @@ def _validate_training_split(layout: BenchmarkLayout) -> None:
         if not held_out:
             raise ValueError(f"{layout.name} {split} split is empty")
         held_out_queries = {str(row["query_id"]) for row in held_out}
-        held_out_nodes = {
-            str(node_id)
-            for row in held_out
-            for node_id in row.get("candidate_node_ids", row["relevant_node_ids"])
-        }
         if train_queries & held_out_queries:
             raise ValueError(f"{layout.name} train and {split} query IDs overlap")
-        if train_nodes & held_out_nodes:
-            raise ValueError(f"{layout.name} train and {split} candidate nodes overlap")
-        if _sample_papers(graph, train_rows) & _sample_papers(graph, held_out):
+        if train_papers & _sample_papers(graph, held_out):
             raise ValueError(f"{layout.name} train and {split} papers overlap")
 
 
@@ -661,19 +456,6 @@ def _validate_processed_schema(layout: BenchmarkLayout) -> None:
             f"Prepare {layout.name} again: expected processed schema "
             f"{PROCESSED_SCHEMA_VERSION}"
         )
-    graph = load_graph(layout.graph)
-    required = {"query_id", "query", "relevant_node_ids"}
-    for path in sorted(layout.processed.glob("*.jsonl")):
-        for index, row in enumerate(read_jsonl(path), 1):
-            missing = required - row.keys()
-            if missing:
-                raise ValueError(f"{path.name}:{index} missing fields: {sorted(missing)}")
-            gold = {str(value) for value in row["relevant_node_ids"]}
-            if not gold or gold - graph.nodes.keys():
-                raise ValueError(f"{path.name}:{index} has invalid relevant_node_ids")
-            candidates = {str(value) for value in row.get("candidate_node_ids", [])}
-            if candidates and (gold - candidates or candidates - graph.nodes.keys()):
-                raise ValueError(f"{path.name}:{index} has invalid candidate_node_ids")
 
 
 def _sample_papers(graph: EvidenceGraph, rows: list[dict[str, Any]]) -> set[str]:
@@ -684,7 +466,7 @@ def _sample_papers(graph: EvidenceGraph, rows: list[dict[str, Any]]) -> set[str]
             papers.add(str(row["paper_id"]))
         papers.update(
             graph.nodes[str(node_id)].paper_id
-            for node_id in row.get("relevant_node_ids", [])
+            for node_id in row.get("candidate_node_ids", row.get("relevant_node_ids", []))
             if str(node_id) in graph.nodes
         )
     return papers

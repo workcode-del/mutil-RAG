@@ -27,7 +27,6 @@ def build_query_pairs(
     output: str | Path,
     *,
     embeddings_path: str | Path | None = None,
-    hard_negatives: bool = True,
     seed: int = 42,
 ) -> Path:
     graph = load_graph(graph_path)
@@ -58,7 +57,7 @@ def build_query_pairs(
             pool = same_type or negatives
             negative = (
                 max(pool, key=lambda node_id: _similarity(embeddings, positive, node_id))
-                if hard_negatives and positive in embeddings
+                if positive in embeddings
                 else rng.choice(pool)
             )
             rows.append(
@@ -110,7 +109,6 @@ def train_hgt(
     epochs: int = 20,
     batch_size: int = 16,
     learning_rate: float = 1e-3,
-    query_weight: float = 1.0,
     relation_weight: float = 0.2,
     seed: int = 42,
     device: str = "cuda",
@@ -131,8 +129,6 @@ def train_hgt(
         raise ValueError("No trainable query pairs were produced")
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
-    if query_weight <= 0 and relation_weight <= 0:
-        raise ValueError("At least one training loss weight must be positive")
     base_embeddings = np.load(base_embeddings_path)
     query_embeddings = np.load(query_embeddings_path)
     input_dimension = int(base_embeddings[base_embeddings.files[0]].shape[-1])
@@ -167,19 +163,15 @@ def train_hgt(
             positions = _node_positions(ids_by_type)
             optimizer.zero_grad()
             hidden = model.encode_graph(data.x_dict, data.edge_index_dict)
-            loss = None
-            if query_weight > 0:
-                query_tensor = torch.from_numpy(
-                    np.stack([query_embeddings[row["query_id"]] for row in batch]).astype(
-                        np.float32
-                    )
-                ).to(device)
-                query_hidden = model.encode_query(query_tensor)
-                positives = _sample_nodes(hidden, positions, batch, "positive_node_id")
-                negatives = _sample_nodes(hidden, positions, batch, "negative_node_id")
-                loss = query_weight * query_evidence_margin_loss(
-                    query_hidden, positives, negatives
+            query_tensor = torch.from_numpy(
+                np.stack([query_embeddings[row["query_id"]] for row in batch]).astype(
+                    np.float32
                 )
+            ).to(device)
+            query_hidden = model.encode_query(query_tensor)
+            positives = _sample_nodes(hidden, positions, batch, "positive_node_id")
+            negatives = _sample_nodes(hidden, positions, batch, "negative_node_id")
+            loss = query_evidence_margin_loss(query_hidden, positives, negatives)
             batch_relations = _relation_triples(batch_graph, papers, seed + epoch + start)
             if relation_weight > 0 and batch_relations:
                 anchors = _triple_nodes(hidden, positions, batch_relations, 0)
@@ -188,9 +180,7 @@ def train_hgt(
                 relation_loss = relation_weight * relation_info_nce(
                     anchors, related, unrelated[:, None, :]
                 )
-                loss = relation_loss if loss is None else loss + relation_loss
-            if loss is None:
-                continue
+                loss += relation_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -213,7 +203,6 @@ def train_hgt(
         "heads": heads,
         "epochs": epochs,
         "batch_size": batch_size,
-        "query_weight": query_weight,
         "relation_weight": relation_weight,
         "seed": seed,
     }

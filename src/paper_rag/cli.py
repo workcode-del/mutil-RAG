@@ -254,7 +254,6 @@ def _train_index(args: argparse.Namespace) -> int:
         args.samples,
         root / "query_pairs.jsonl",
         embeddings_path=args.base_embeddings,
-        hard_negatives=args.negative_sampling == "hard",
         seed=args.seed,
     )
     queries = embed_training_queries(
@@ -272,7 +271,6 @@ def _train_index(args: argparse.Namespace) -> int:
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
-        query_weight=args.query_weight,
         relation_weight=args.relation_weight,
         seed=args.seed,
         device=args.device,
@@ -358,9 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--epochs", type=int, default=20)
     train.add_argument("--batch-size", type=int, default=16)
     train.add_argument("--learning-rate", type=float, default=1e-3)
-    train.add_argument("--query-weight", type=float, default=1.0)
     train.add_argument("--relation-weight", type=float, default=0.2)
-    train.add_argument("--negative-sampling", choices=("hard", "random"), default="hard")
     train.add_argument("--seed", type=int, default=42)
     train.add_argument("--device", default="cuda")
     train.set_defaults(handler=_train_index)

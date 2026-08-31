@@ -87,13 +87,6 @@ M3DocVQA 与 MMLongBench-Doc 的官方检索单位是整页，所以页面建为
 
 新增集合目前使用 dev/all 标注；无训练方法的 `--split official` 对应 `all`。训练 HGT 后必须报告内部 held-out test，并通过训练/评测 query 重叠检查。
 
-跨数据集共享 HGT 可使用 `--joint-training`；每个数据集仍只读取自己的 train split，节点 ID 在合并图中带数据集命名空间，产物按数据集分别导出：
-
-```bash
-paper-rag benchmark train --datasets peerqa spiqa --joint-training \
-  --root data/benchmarks --config configs/default.yaml
-```
-
 ## 2. 自定义数据
 
 每行一个 JSON 样本：

@@ -82,38 +82,6 @@ def test_pipeline_applies_sample_scope() -> None:
     assert store.candidate_node_ids == {"p:s"}
 
 
-def test_evaluation_can_disable_gold_document_and_candidate_scope() -> None:
-    graph = EvidenceGraph()
-    graph.add_node(EvidenceNode("p:s", "p", NodeType.SENTENCE, text="answer"))
-    store = RecordingStore()
-    pipeline = ScientificRAGPipeline(
-        graph,
-        FakeEmbedder(),
-        store,
-        RankedEvidenceRetriever(graph, top_k=1, budget=10, image_unit=1),
-    )
-    sample = EvaluationSample.from_dict(
-        {
-            "query_id": "q",
-            "query": "question",
-            "paper_id": "p",
-            "relevant_node_ids": ["p:s"],
-            "candidate_node_ids": ["p:s"],
-        },
-        0,
-    )
-
-    evaluate(
-        pipeline,
-        [sample],
-        scope_to_sample_papers=False,
-        scope_to_sample_candidates=False,
-    )
-
-    assert store.paper_ids is None
-    assert store.candidate_node_ids is None
-
-
 def test_batched_queries_preserve_results_and_report_latency() -> None:
     graph = EvidenceGraph()
     graph.add_node(EvidenceNode("p:s", "p", NodeType.SENTENCE, text="answer"))

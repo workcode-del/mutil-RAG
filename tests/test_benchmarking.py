@@ -1,7 +1,6 @@
 import zipfile
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from paper_rag.benchmarking.base import (
@@ -18,7 +17,6 @@ from paper_rag.benchmarking.multimodalqa import _component_graph, _samples
 from paper_rag.benchmarking.page_datasets import _mmlong_samples, _page_node_id
 from paper_rag.benchmarking.peerqa import _build_official_graph
 from paper_rag.benchmarking.runner import (
-    _merge_embedding_archives,
     _official_split,
     _validate_preparation,
     _validate_processed_schema,
@@ -30,23 +28,6 @@ from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
 from paper_rag.io import write_jsonl
 from paper_rag.training import count_relation_triples
-
-
-def test_joint_embedding_merge_streams_namespaced_entries(tmp_path) -> None:
-    first = tmp_path / "first.npz"
-    second = tmp_path / "second.npz"
-    np.savez_compressed(first, node=np.array([1.0, 0.0]))
-    np.savez_compressed(second, node=np.array([0.0, 1.0]))
-
-    output = _merge_embedding_archives(
-        [("first::", first), ("second::", second)],
-        tmp_path / "merged.npz",
-    )
-
-    with np.load(output) as archive:
-        assert set(archive.files) == {"first::node", "second::node"}
-        assert archive["first::node"].tolist() == [1.0, 0.0]
-
 
 def test_peerqa_official_rows_build_stable_nodes() -> None:
     graph = _build_official_graph(
@@ -255,17 +236,17 @@ def test_spiqa_builds_figure_table_caption_graph_and_audits_missing_reference(
             {
                 "question": "Which plot is relevant?",
                 "answer": "Figure 1",
-                "reference": "paper-Figure1-1.png",
+                "reference_figure": "paper-Figure1-1.png",
             },
             {
                 "question": "Which table is relevant?",
                 "answer": "Table 1",
-                "reference": "paper-Table1-1.png",
+                "reference_figure": "paper-Table1-1.png",
             },
             {
                 "question": "Which reference is absent?",
                 "answer": "Missing",
-                "reference": "paper-Figure9-1.png",
+                "reference_figure": "paper-Figure9-1.png",
             },
         ],
     }
@@ -289,6 +270,7 @@ def test_spiqa_builds_figure_table_caption_graph_and_audits_missing_reference(
         set(sample["relevant_node_ids"]).issubset(sample["candidate_node_ids"])
         for sample in samples["train"]
     )
+    assert all("paper_ids" not in sample for sample in samples["train"])
     assert not audit["missing_images"]
     assert audit["missing_evidence"] == ["spiqa::train::paper::2:paper-Figure9-1.png"]
 
@@ -491,9 +473,7 @@ def test_training_report_counts_splits_and_relation_triples(tmp_path) -> None:
         "questions": 1,
         "papers": 1,
         "nodes": 3,
-        "node_type_count": 1,
         "node_types": {"Sentence": 3},
-        "relation_type_count": 1,
         "relation_types": {"next_sentence": 1},
         "relation_triples": 1,
     }
@@ -502,7 +482,7 @@ def test_training_report_counts_splits_and_relation_triples(tmp_path) -> None:
     _validate_training_split(layout)
 
 
-def test_training_rejects_test_candidate_leakage(tmp_path) -> None:
+def test_training_rejects_test_paper_leakage(tmp_path) -> None:
     layout = BenchmarkLayout.create("dataset", tmp_path)
     graph = EvidenceGraph()
     graph.add_node(EvidenceNode("shared", "paper", NodeType.SENTENCE, text="shared"))
@@ -516,19 +496,12 @@ def test_training_rejects_test_candidate_leakage(tmp_path) -> None:
     write_jsonl(layout.samples("train"), [{**row, "query_id": "train"}])
     write_jsonl(layout.samples("test"), [{**row, "query_id": "test"}])
 
-    try:
+    with pytest.raises(ValueError, match="papers overlap"):
         _validate_training_split(layout)
-    except ValueError as error:
-        assert "candidate nodes overlap" in str(error)
-    else:
-        raise AssertionError("Train/test candidate leakage was accepted")
 
 
 def test_processed_schema_rejects_stale_artifacts(tmp_path) -> None:
     layout = BenchmarkLayout.create("dataset", tmp_path)
-    graph = EvidenceGraph()
-    graph.add_node(EvidenceNode("p:s", "p", NodeType.SENTENCE, text="answer"))
-    save_graph(graph, layout.graph)
     write_json(layout.processed / "prepare_report.json", {"dataset": "dataset"})
 
     with pytest.raises(RuntimeError, match="Prepare dataset again"):
@@ -537,10 +510,6 @@ def test_processed_schema_rejects_stale_artifacts(tmp_path) -> None:
     write_json(
         layout.processed / "prepare_report.json",
         {"dataset": "dataset", "schema_version": PROCESSED_SCHEMA_VERSION},
-    )
-    write_jsonl(
-        layout.samples("train"),
-        [{"query_id": "q", "query": "question", "relevant_node_ids": ["p:s"]}],
     )
     _validate_processed_schema(layout)
 

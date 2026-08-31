@@ -22,7 +22,7 @@ SPLIT_FILES = {
 IMAGE_ARCHIVES = {
     "train": "train_val/SPIQA_train_val_Images.zip",
     "dev": "train_val/SPIQA_train_val_Images.zip",
-    "test": "test-A/SPIQA_testA_Images_224px.zip",
+    "test": "test-A/SPIQA_testA_Images.zip",
 }
 
 
@@ -38,18 +38,22 @@ def prepare_spiqa(
         for split, relative_path in SPLIT_FILES.items()
     }
     image_roots: dict[str, Path] = {}
-    extracted_archives: dict[str, Path] = {}
-    for split in SPLIT_FILES:
-        archive_path = IMAGE_ARCHIVES[split]
-        if archive_path not in extracted_archives:
-            extracted_archives[archive_path] = _ensure_split_images(
-                root,
-                metadata[split],
-                archive_path,
-                layout.raw / "extracted" / Path(archive_path).stem,
-                force=force,
-            )
-        image_roots[split] = extracted_archives[archive_path]
+    for archive_path in dict.fromkeys(IMAGE_ARCHIVES.values()):
+        splits = [split for split, path in IMAGE_ARCHIVES.items() if path == archive_path]
+        references = {
+            str(reference)
+            for split in splits
+            for paper in metadata[split].values()
+            for reference in paper.get("all_figures", {})
+        }
+        image_root = _ensure_split_images(
+            root,
+            references,
+            archive_path,
+            layout.raw / "extracted" / Path(archive_path).stem,
+            force=force,
+        )
+        image_roots.update(dict.fromkeys(splits, image_root))
     graph, samples, audit = _convert_splits(metadata, image_roots)
 
     save_graph(graph, layout.graph)
@@ -141,7 +145,9 @@ def _convert_splits(
                     )
 
             for index, qa in enumerate(paper.get("qa", [])):
-                reference = str(qa.get("reference") or "")
+                reference = str(
+                    qa.get("reference_figure") or qa.get("reference") or ""
+                )
                 relevant = node_by_reference.get(reference)
                 query_id = f"spiqa::{split}::{paper_id}::{index}"
                 if relevant is None:
@@ -152,7 +158,6 @@ def _convert_splits(
                     {
                         "query_id": query_id,
                         "paper_id": paper_id,
-                        "paper_ids": [paper_id],
                         "query": str(qa.get("question") or ""),
                         "answer": str(qa.get("answer") or ""),
                         "relevant_node_ids": [relevant],
@@ -182,17 +187,12 @@ def _load_metadata(root: Path, relative_path: str) -> dict[str, Any]:
 
 def _ensure_split_images(
     root: Path,
-    metadata: dict[str, Any],
+    references: set[str],
     archive_path: str,
     extraction_root: Path,
     *,
     force: bool,
 ) -> Path:
-    references = {
-        str(reference)
-        for paper in metadata.values()
-        for reference in paper.get("all_figures", {})
-    }
     existing = _image_lookup(root)
     if references.issubset(existing):
         return root

@@ -72,7 +72,6 @@ def evaluate(
     cutoffs: tuple[int, ...] = (1, 3, 5, 10),
     per_type_top_k: int | None = None,
     scope_to_sample_papers: bool = True,
-    scope_to_sample_candidates: bool = True,
     metadata: dict[str, Any] | None = None,
     query_vectors: dict[str, np.ndarray] | None = None,
     query_embedding_ms: float = 0.0,
@@ -93,11 +92,7 @@ def evaluate(
             sample.query,
             per_type_top_k=per_type_top_k,
             paper_ids=sample.paper_ids if scope_to_sample_papers and sample.paper_ids else None,
-            candidate_node_ids=(
-                sample.candidate_node_ids
-                if scope_to_sample_candidates and sample.candidate_node_ids
-                else None
-            ),
+            candidate_node_ids=sample.candidate_node_ids or None,
             query_vector=query_vectors[sample.query_id] if query_vectors is not None else None,
         )
         retrieval_ms = (perf_counter() - started) * 1000.0

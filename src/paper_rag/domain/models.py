@@ -106,6 +106,8 @@ class QuerySpec:
     unit: str | None = None
     conditions: list[str] = field(default_factory=list)
     required_modalities: list[str] = field(default_factory=list)
+    entities: list[str] = field(default_factory=list)
+    auto_parsed_fields: list[str] = field(default_factory=list)
 
     @property
     def required_slots(self) -> set[str]:

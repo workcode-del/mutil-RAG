@@ -13,9 +13,17 @@ def _parse_rows(value: str) -> list[list[str]]:
     lines = [line.strip().strip("|") for line in value.splitlines() if line.strip()]
     if not lines:
         return []
-    delimiter = "\t" if any("\t" in line for line in lines) else ("|" if any("|" in line for line in lines) else ",")
+    delimiter = (
+        "\t"
+        if any("\t" in line for line in lines)
+        else "|" if any("|" in line for line in lines) else ","
+    )
     rows = list(csv.reader(io.StringIO("\n".join(lines)), delimiter=delimiter))
-    return [[cell.strip() for cell in row] for row in rows if not all(set(cell) <= {"-", ":", " "} for cell in row)]
+    return [
+        [cell.strip() for cell in row]
+        for row in rows
+        if not all(set(cell) <= {"-", ":", " "} for cell in row)
+    ]
 
 
 def _numeric(value: str) -> float | None:
@@ -43,7 +51,11 @@ class SelfEnsemblingChartExtractor:
         tables = [_parse_rows(sample.linearized_table) for sample in samples]
         shapes = [(len(table), max((len(row) for row in table), default=0)) for table in tables]
         target_shape = statistics.mode(shapes)
-        aligned = [table for table, shape in zip(tables, shapes, strict=True) if shape == target_shape]
+        aligned = [
+            table
+            for table, shape in zip(tables, shapes, strict=True)
+            if shape == target_shape
+        ]
         if not aligned or target_shape == (0, 0):
             return ChartExtractionResult("", "suspect", 0.0, 1.0, "self-ensemble")
 
@@ -55,7 +67,9 @@ class SelfEnsemblingChartExtractor:
             row: list[str] = []
             for column_index in range(columns):
                 values = [
-                    table[row_index][column_index] if column_index < len(table[row_index]) else ""
+                    table[row_index][column_index]
+                    if column_index < len(table[row_index])
+                    else ""
                     for table in aligned
                 ]
                 numbers = [_numeric(value) for value in values]

@@ -1,12 +1,13 @@
 import numpy as np
 
 from paper_rag.benchmarking.base import read_jsonl, write_jsonl
-from paper_rag.domain import EvidenceNode, NodeType
+from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
 from paper_rag.training import (
     _pair_papers,
     _paper_graph_index,
     _paper_subgraph,
+    _relation_triples,
     build_query_pairs,
 )
 
@@ -136,3 +137,21 @@ def test_training_batch_includes_negative_papers() -> None:
 
     assert papers == {"a", "b"}
     assert set(subgraph.nodes) == {"a:positive", "b:negative"}
+
+
+def test_relation_supervision_ignores_low_confidence_edges() -> None:
+    graph = EvidenceGraph()
+    graph.extend(
+        [
+            EvidenceNode("p:c", "p", NodeType.CAPTION, text="caption"),
+            EvidenceNode("p:f1", "p", NodeType.FIGURE, image_path="one.png"),
+            EvidenceNode("p:f2", "p", NodeType.FIGURE, image_path="two.png"),
+        ],
+        [
+            EvidenceEdge(
+                "p:c", "p:f1", RelationType.CAPTION_OF, confidence=0.7
+            )
+        ],
+    )
+
+    assert _relation_triples(graph, {"p"}, seed=0) == []

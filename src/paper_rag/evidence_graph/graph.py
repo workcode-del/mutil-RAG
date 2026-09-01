@@ -62,7 +62,12 @@ class EvidenceGraph:
                     queue.append((neighbor, depth + 1))
         return visited
 
-    def paper_subgraph(self, paper_id: str, node_ids: set[str] | None = None) -> "EvidenceGraph":
+    def paper_subgraph(
+        self,
+        paper_id: str,
+        node_ids: set[str] | None = None,
+        min_edge_confidence: float = 0.0,
+    ) -> "EvidenceGraph":
         selected = {
             node_id
             for node_id, node in self.nodes.items()
@@ -72,6 +77,10 @@ class EvidenceGraph:
         for node_id in selected:
             graph.add_node(self.nodes[node_id])
         for edge in self.edges:
-            if edge.src in selected and edge.dst in selected:
+            if (
+                edge.src in selected
+                and edge.dst in selected
+                and edge.confidence >= min_edge_confidence
+            ):
                 graph.add_edge(edge)
         return graph

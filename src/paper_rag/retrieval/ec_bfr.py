@@ -70,11 +70,12 @@ class EvidenceClosureBudgetedForestRetriever:
                     continue
                 new_slots = candidate.covered_slots - covered_slots
                 new_entities = candidate.entities - entities
+                entity_novelty = min(len(new_entities), 3) / 3
                 overlap = len(candidate.node_ids & selected_nodes) / max(len(candidate.node_ids), 1)
                 gain = (
                     candidate.relevance
                     + self.config.slot_weight * len(new_slots) / max(len(query.required_slots), 1)
-                    + self.config.entity_weight * len(new_entities)
+                    + self.config.entity_weight * entity_novelty
                     - self.config.redundancy_weight * overlap
                 )
                 utility = gain / marginal_cost
@@ -88,7 +89,9 @@ class EvidenceClosureBudgetedForestRetriever:
             covered_slots.update(chosen.covered_slots)
             entities.update(chosen.entities)
             total_cost += marginal_cost
-            remaining.remove(chosen)
+            # A forest contains at most one optimized evidence tree per paper.  The
+            # lambda sweep generates alternatives, not independent trees to stack.
+            remaining = [item for item in remaining if item.paper_id != chosen.paper_id]
 
         forest = EvidenceForest(selected, total_cost, self.config.budget)
         forest.validate_budget()

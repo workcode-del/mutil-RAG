@@ -11,7 +11,7 @@ from paper_rag.embedding import BM25EvidenceStore, HTTPEmbedder, Qwen3VLEmbedder
 from paper_rag.embedding.qdrant_store import QdrantEvidenceStore
 from paper_rag.evidence_graph import load_graph
 from paper_rag.generation import OpenAICompatibleGenerator
-from paper_rag.models.cached_scorer import CachedHGTScorer
+from paper_rag.models.cached_scorer import CachedGraphScorer
 from paper_rag.pipeline import ScientificRAGPipeline
 from paper_rag.reranking import HTTPReranker, Qwen3VLReranker
 from paper_rag.retrieval import build_evidence_retriever
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 def build_deployed_pipeline(
     graph_path: str | Path,
     config_path: str | Path = "configs/default.yaml",
-    hgt_artifact_dir: str | Path | None = None,
+    graph_artifact_dir: str | Path | None = None,
     enable_reranker: bool = True,
     enable_generator: bool = False,
     candidate_backend: str = "embedding",
@@ -33,11 +33,12 @@ def build_deployed_pipeline(
     candidate_store: Any | None = None,
 ) -> ScientificRAGPipeline:
     logger.info(
-        "Loading pipeline: graph=%s candidate=%s retrieval=%s hgt=%s reranker=%s generator=%s",
+        "Loading pipeline: graph=%s candidate=%s retrieval=%s graph_index=%s "
+        "reranker=%s generator=%s",
         graph_path,
         candidate_backend,
         retrieval_method,
-        bool(hgt_artifact_dir),
+        bool(graph_artifact_dir),
         enable_reranker,
         enable_generator,
     )
@@ -45,8 +46,8 @@ def build_deployed_pipeline(
     graph = load_graph(graph_path)
     normalized_candidate_backend = candidate_backend.strip().lower()
     if normalized_candidate_backend == "bm25":
-        if hgt_artifact_dir:
-            raise ValueError("HGT scoring requires candidate_backend=embedding")
+        if graph_artifact_dir:
+            raise ValueError("Graph scoring requires candidate_backend=embedding")
         embedder = None
         store = BM25EvidenceStore(graph)
     elif normalized_candidate_backend == "embedding":
@@ -61,7 +62,7 @@ def build_deployed_pipeline(
         retriever_config,
         selection_top_k=selection_top_k,
     )
-    graph_scorer = CachedHGTScorer(hgt_artifact_dir) if hgt_artifact_dir else None
+    graph_scorer = CachedGraphScorer(graph_artifact_dir) if graph_artifact_dir else None
     reranker = build_reranker(config) if enable_reranker else None
     generator = build_generator(config) if enable_generator else None
     vector_config = config["vector_store"]
@@ -74,6 +75,7 @@ def build_deployed_pipeline(
         reranker=reranker,
         generator=generator,
         default_per_type_top_k=int(vector_config.get("per_type_top_k", 25)),
+        reranker_top_n=int(config["reranker"].get("top_n", 10)) if reranker else None,
     )
     logger.info("Pipeline ready: nodes=%d edges=%d", len(graph.nodes), len(graph.edges))
     return pipeline
@@ -163,6 +165,7 @@ def build_generator(config: dict[str, Any]) -> OpenAICompatibleGenerator:
         generation["model"],
         api_key_env=str(generation.get("api_key_env", "PAPER_RAG_API_KEY")),
         timeout=float(generation.get("timeout", 120)),
+        require_evidence_ids=bool(generation.get("require_evidence_ids", True)),
     )
 
 
@@ -176,6 +179,7 @@ def build_retriever_config(config: dict) -> ECBFRConfig:
         budget=int(retrieve_config["budget"]["text_tokens"]),
         image_unit=int(retrieve_config["budget"]["image_unit"]),
         candidate_hops=int(retrieve_config["candidate_hops"]),
+        min_edge_confidence=float(retrieve_config.get("min_edge_confidence", 0.8)),
         lambda_values=tuple(float(x) for x in retrieve_config["lambda_values"]),
         slot_weight=float(retrieve_config.get("slot_weight", 0.4)),
         entity_weight=float(retrieve_config.get("entity_weight", 0.3)),

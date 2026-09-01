@@ -93,9 +93,12 @@ def upsert_base_embeddings(
     store, graph: EvidenceGraph, embeddings: dict[str, np.ndarray], batch_size: int = 4096
 ) -> None:
     items = list(embeddings.items())
+    if hasattr(store, "reset_collection"):
+        store.reset_collection()
+    else:
+        store.ensure_collection()
     if not items:
         return
-    store.ensure_collection()
     logger.info("Vector upsert: nodes=%d batch_size=%d", len(items), batch_size)
     for start in range(0, len(items), batch_size):
         batch = items[start : start + batch_size]

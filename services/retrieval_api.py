@@ -15,7 +15,10 @@ if graph_path:
     pipeline = build_deployed_pipeline(
         graph_path=graph_path,
         config_path=os.getenv("PAPER_RAG_CONFIG", "configs/default.yaml"),
-        hgt_artifact_dir=os.getenv("PAPER_RAG_HGT_ARTIFACTS"),
+        graph_artifact_dir=(
+            os.getenv("PAPER_RAG_GRAPH_ARTIFACTS")
+            or os.getenv("PAPER_RAG_HGT_ARTIFACTS")
+        ),
         # Default config loads Embedding and Reranker in this process and environment.
         # configs/server.yaml keeps the optional HTTP-isolated deployment mode.
         enable_reranker=os.getenv("PAPER_RAG_ENABLE_RERANKER", "1") == "1",

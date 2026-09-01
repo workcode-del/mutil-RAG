@@ -51,6 +51,14 @@ class RecordingStore:
         return [SearchHit("p:s", "p", NodeType.SENTENCE, 1.0, {"embedding": 1.0})]
 
 
+class RecordingReranker:
+    documents = None
+
+    def score(self, query, documents):
+        self.documents = documents
+        return [1.0 - index * 0.1 for index in range(len(documents))]
+
+
 def test_pipeline_applies_sample_scope() -> None:
     graph = EvidenceGraph()
     graph.add_node(EvidenceNode("p:s", "p", NodeType.SENTENCE, text="answer"))
@@ -80,6 +88,40 @@ def test_pipeline_applies_sample_scope() -> None:
 
     assert store.paper_ids == {"p"}
     assert store.candidate_node_ids == {"p:s"}
+
+
+def test_pipeline_reranks_only_configured_top_n() -> None:
+    graph = EvidenceGraph()
+    for index in range(3):
+        graph.add_node(EvidenceNode(f"p:s{index}", "p", NodeType.SENTENCE, text=str(index)))
+
+    class ThreeHitStore(RecordingStore):
+        def search(self, *args, **kwargs):
+            return [
+                SearchHit(
+                    f"p:s{index}",
+                    "p",
+                    NodeType.SENTENCE,
+                    3.0 - index,
+                    {"embedding": 3.0 - index},
+                )
+                for index in range(3)
+            ]
+
+    reranker = RecordingReranker()
+    pipeline = ScientificRAGPipeline(
+        graph,
+        FakeEmbedder(),
+        ThreeHitStore(),
+        RankedEvidenceRetriever(graph, top_k=3, budget=100, image_unit=1),
+        reranker=reranker,
+        reranker_top_n=2,
+    )
+
+    result = pipeline.run(QuerySpec("question"))
+
+    assert reranker.documents == ["0", "1"]
+    assert "reranker" not in result.hits[2].score_components
 
 
 def test_batched_queries_preserve_results_and_report_latency() -> None:

@@ -48,6 +48,12 @@ class QdrantEvidenceStore:
                 ),
             )
 
+    def reset_collection(self) -> None:
+        """Create an exact snapshot index, removing points from older graphs."""
+        if self.client.collection_exists(self.collection):
+            self.client.delete_collection(collection_name=self.collection)
+        self.ensure_collection()
+
     def upsert(self, nodes: Sequence[EvidenceNode], vectors: np.ndarray) -> None:
         if vectors.shape != (len(nodes), self.dimension):
             raise ValueError(
@@ -109,6 +115,7 @@ class QdrantEvidenceStore:
             query_filter = self.models.Filter(
                 must=conditions
             )
+
             response = self.client.query_points(
                 collection_name=self.collection,
                 query=vector.tolist(),

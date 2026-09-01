@@ -96,7 +96,7 @@ paper-rag index data/parsed/evidence_graph_chart.json \
   --config configs/default.yaml
 ```
 
-## 5. 训练 HGT
+## 5. 训练 HGT 或 R-GCN
 
 训练 JSONL 必须包含 `query_id`、`query`、`paper_id` 和 `relevant_node_ids`，可选 `candidate_node_ids`。所有节点 ID 必须属于同一版图。
 
@@ -107,17 +107,20 @@ paper-rag train-index \
   --base-embeddings data/cache/base_embeddings.npz \
   --output outputs/hgt \
   --config configs/default.yaml \
-  --epochs 20 --device cuda
+  --epochs 20 --device cuda \
+  --model-type hgt
 ```
+
+把 `--model-type` 改为 `rgcn` 即可训练同数据、同损失和同超参数协议的 R-GCN 基线；两个模型应写到不同的 `--output` 目录。
 
 输出：
 
 - `graph_embeddings.npy`：256 维节点表示；
 - `node_ids.json`：矩阵行与证据 ID 的映射；
 - `query_projector.pt`：在线 query 投影；
-- `training.json`：图哈希、训练 query 和关系三元组统计。
+- `training.json`：模型类型、图哈希、训练 query 和关系三元组统计。
 
-公开数据的准备、训练和测试可直接使用 `paper-rag benchmark all --train-hgt`，见 [EVALUATION.md](EVALUATION.md)。
+公开数据的准备、训练和测试可直接使用 `paper-rag benchmark all --train-graph-index --graph-model hgt`；R-GCN 把模型参数改为 `rgcn`，见 [EVALUATION.md](EVALUATION.md)。
 
 ## 6. 启动服务
 
@@ -125,12 +128,12 @@ paper-rag train-index \
 paper-rag-serve \
   --graph data/parsed/evidence_graph.json \
   --config configs/default.yaml \
-  --hgt-artifacts outputs/hgt \
+  --graph-artifacts outputs/hgt \
   --enable-generator \
   --host 127.0.0.1 --port 8000
 ```
 
-不需要 HGT 时删除 `--hgt-artifacts`；只检索证据、不生成答案时删除 `--enable-generator`。
+不需要图模型时删除 `--graph-artifacts`；该参数同时接受 HGT 与 R-GCN 产物。只检索证据、不生成答案时删除 `--enable-generator`。
 
 ```bash
 curl -X POST http://127.0.0.1:8000/query \
@@ -153,7 +156,7 @@ curl http://127.0.0.1:8000/health
 还应确认：
 
 - Qdrant 与 NPZ 的基础向量维度为 2048；
-- HGT `training.json` 的图哈希与当前图一致；
+- HGT/R-GCN `training.json` 的模型类型和图哈希与当前运行设置一致；
 - `relation_triples` 大于 0 只表示关系损失有训练样本；若要声称多模态关系监督，还应确认图中存在 `caption_of`、`refers_to` 或 `derived_from`；
 - 返回的 `total_cost` 不超过配置预算；
 - GPU 模型、MinerU 输出质量和外部 API 需在实际 Linux 机器上验证。

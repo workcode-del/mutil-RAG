@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Any, Iterable
 
 
-def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
+def iter_jsonl(path: str | Path) -> Iterator[dict[str, Any]]:
     with Path(path).open("r", encoding="utf-8") as stream:
-        return [json.loads(line) for line in stream if line.strip()]
+        for line in stream:
+            if line.strip():
+                yield json.loads(line)
+
+
+def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    return list(iter_jsonl(path))
 
 
 def write_jsonl(path: str | Path, rows: Iterable[dict[str, Any]]) -> Path:

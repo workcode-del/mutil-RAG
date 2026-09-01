@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from paper_rag.domain import BoundingBox, EvidenceEdge, EvidenceNode, NodeType, RelationType
+from paper_rag.entities import enrich_graph_entities
 from paper_rag.evidence_graph.graph import EvidenceGraph
 
 
 def save_graph(graph: EvidenceGraph, path: str | Path) -> None:
+    enrich_graph_entities(graph)
     payload = {
         "schema_version": "1.0",
         "nodes": [node.to_dict() for node in graph.nodes.values()],
@@ -64,5 +66,5 @@ def load_graph(path: str | Path) -> EvidenceGraph:
                 attributes=raw.get("attributes", {}),
             )
         )
+    enrich_graph_entities(graph)
     return graph
-

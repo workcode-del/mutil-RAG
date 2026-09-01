@@ -79,7 +79,9 @@ def solve_pcst(
 
 def _positive_prize_fallback(graph: EvidenceGraph, prizes: dict[str, float]) -> PCSTResult:
     """Availability fallback, deliberately not reported as the PCST experimental baseline."""
-    positive = {node_id for node_id, prize in prizes.items() if prize > 0 and node_id in graph.nodes}
+    positive = {
+        node_id for node_id, prize in prizes.items() if prize > 0 and node_id in graph.nodes
+    }
     if not positive and prizes:
         positive = {max(prizes, key=prizes.get)}
     edges = {
@@ -88,4 +90,3 @@ def _positive_prize_fallback(graph: EvidenceGraph, prizes: dict[str, float]) -> 
         if edge.src in positive and edge.dst in positive
     }
     return PCSTResult(positive, edges, "positive_prize_fallback")
-

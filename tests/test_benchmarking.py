@@ -17,6 +17,8 @@ from paper_rag.benchmarking.multimodalqa import _component_graph, _samples
 from paper_rag.benchmarking.page_datasets import _mmlong_samples, _page_node_id
 from paper_rag.benchmarking.peerqa import _build_official_graph
 from paper_rag.benchmarking.runner import (
+    DEFAULT_SYSTEMS,
+    SYSTEMS,
     _official_split,
     _validate_preparation,
     _validate_processed_schema,
@@ -28,6 +30,13 @@ from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
 from paper_rag.io import write_jsonl
 from paper_rag.training import count_relation_triples
+
+
+def test_rgcn_is_an_explicit_nondefault_graph_baseline() -> None:
+    assert SYSTEMS["rgcn"].graph_model == "rgcn"
+    assert SYSTEMS["rgcn"].retrieval_method == SYSTEMS["full"].retrieval_method
+    assert SYSTEMS["rgcn"].reranker == SYSTEMS["full"].reranker
+    assert "rgcn" not in DEFAULT_SYSTEMS
 
 def test_peerqa_official_rows_build_stable_nodes() -> None:
     graph = _build_official_graph(

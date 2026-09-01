@@ -38,6 +38,7 @@ DEFAULT_METRICS = (
     "micro_table_evidence_f1",
     "macro_closure_validity",
     "macro_budget_violation",
+    "macro_pcst_fallback",
     "macro_evidence_cost",
     "macro_retrieval_latency_ms",
     "macro_query_embedding_amortized_ms",

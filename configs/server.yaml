@@ -1,14 +1,9 @@
-project:
-  data_dir: data
-  artifacts_dir: outputs
-
 embedding:
   backend: http
   service_url: http://127.0.0.1:8101
   dimension: 2048
 
 vector_store:
-  backend: qdrant
   mode: server
   url: http://127.0.0.1:6333
   collection: scientific_evidence
@@ -24,6 +19,7 @@ reranker:
 
 retrieval:
   candidate_hops: 2
+  min_edge_confidence: 0.8
   lambda_values: [0.5, 1.0, 2.0]
   slot_weight: 0.4
   entity_weight: 0.3
@@ -33,6 +29,5 @@ retrieval:
     image_unit: 512
 
 generation:
-  provider: openai_compatible
   base_url: http://127.0.0.1:8001/v1
   model: Qwen/Qwen3-VL-4B-Instruct

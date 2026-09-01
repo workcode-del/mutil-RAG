@@ -12,6 +12,7 @@ import numpy as np
 from paper_rag.domain import NodeType, QuerySpec
 from paper_rag.evaluation.metrics import result_metrics, serialize_hit, summarize
 from paper_rag.pipeline import ScientificRAGPipeline
+from paper_rag.query_understanding import ScientificQueryParser
 
 
 logger = logging.getLogger(__name__)
@@ -36,19 +37,21 @@ class EvaluationSample:
             paper_ids.add(str(data["paper_id"]))
         return cls(
             query_id=str(data.get("query_id", index)),
-            query=QuerySpec(
-                query=str(data["query"]),
-                answer_type=str(data.get("answer_type", "free_text")),
-                entity_type=data.get("entity_type"),
-                metric=data.get("metric"),
-                operator=data.get("operator"),
-                value=data.get("value"),
-                unit=data.get("unit"),
-                conditions=[str(value) for value in data.get("conditions", [])],
-                required_modalities=[
-                    str(value)
-                    for value in data.get("required_modalities", [])
-                ],
+            query=ScientificQueryParser().parse(
+                QuerySpec(
+                    query=str(data["query"]),
+                    answer_type=str(data.get("answer_type", "free_text")),
+                    entity_type=data.get("entity_type"),
+                    metric=data.get("metric"),
+                    operator=data.get("operator"),
+                    value=data.get("value"),
+                    unit=data.get("unit"),
+                    conditions=[str(value) for value in data.get("conditions", [])],
+                    required_modalities=[
+                        str(value) for value in data.get("required_modalities", [])
+                    ],
+                    entities=[str(value) for value in data.get("entities", [])],
+                )
             ),
             relevant_node_ids=gold,
             paper_ids=paper_ids,
@@ -113,6 +116,7 @@ def evaluate(
                 "gold_node_ids": sorted(sample.relevant_node_ids),
                 "ranked_hits": [serialize_hit(hit) for hit in result.hits],
                 "selected_node_ids": sorted(result.forest.node_ids),
+                "forest_metadata": [tree.metadata for tree in result.forest.trees],
                 "answer": result.answer.text if result.answer else None,
                 "evidence_ids": result.answer.evidence_ids if result.answer else [],
             }

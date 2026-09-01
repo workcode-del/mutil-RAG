@@ -106,6 +106,7 @@ def _add_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--split", default="official")
     parser.add_argument("--systems", nargs="+", choices=tuple(SYSTEMS), default=DEFAULT_SYSTEMS)
     parser.add_argument("--hgt-artifacts")
+    parser.add_argument("--rgcn-artifacts")
     parser.add_argument("--enable-generator", action="store_true")
     parser.add_argument("--reindex", action="store_true")
     parser.add_argument("--selection-top-k", type=int, default=10)
@@ -122,11 +123,22 @@ def _add_run_options(parser: argparse.ArgumentParser) -> None:
 
 def _add_train_options(parser: argparse.ArgumentParser, *, optional: bool = False) -> None:
     if optional:
-        parser.add_argument("--train-hgt", action="store_true")
+        parser.add_argument(
+            "--train-graph-index",
+            "--train-hgt",
+            dest="train_graph_index",
+            action="store_true",
+        )
     else:
         parser.add_argument("--config", default="configs/default.yaml")
         parser.add_argument("--reindex", action="store_true")
-    parser.add_argument("--hgt-output-root", default="outputs/benchmark_hgt")
+    parser.add_argument(
+        "--graph-output-root",
+        "--hgt-output-root",
+        dest="graph_output_root",
+        default="outputs/benchmark_graph",
+    )
+    parser.add_argument("--graph-model", choices=("hgt", "rgcn"), default="hgt")
     parser.add_argument("--train-epochs", type=int, default=20)
     parser.add_argument("--train-batch-size", type=int, default=16)
     parser.add_argument("--train-learning-rate", type=float, default=1e-3)
@@ -156,10 +168,14 @@ def _handle_train(args: argparse.Namespace) -> int:
 def _handle_all(args: argparse.Namespace) -> int:
     prepared = _prepare(args)
     print(json.dumps(_report_summaries(prepared), ensure_ascii=False, indent=2))
-    if args.train_hgt:
+    if args.train_graph_index:
         print(json.dumps(_train(args), ensure_ascii=False, indent=2))
-        args.systems = list(dict.fromkeys([*args.systems, "full"]))
-        args.hgt_artifacts = args.hgt_output_root
+        system = "full" if args.graph_model == "hgt" else "rgcn"
+        args.systems = list(dict.fromkeys([*args.systems, system]))
+        if args.graph_model == "hgt":
+            args.hgt_artifacts = args.graph_output_root
+        else:
+            args.rgcn_artifacts = args.graph_output_root
         if args.split == "official":
             args.split = "test"
     reports = _run(args)
@@ -231,6 +247,7 @@ def _run(args: argparse.Namespace) -> dict[str, dict]:
             split=args.split,
             systems=args.systems,
             hgt_artifacts=_dataset_artifacts(args.hgt_artifacts, dataset),
+            rgcn_artifacts=_dataset_artifacts(args.rgcn_artifacts, dataset),
             enable_generator=args.enable_generator,
             reindex=args.reindex,
             selection_top_k=args.selection_top_k,
@@ -258,7 +275,7 @@ def _train(args: argparse.Namespace) -> dict[str, dict]:
         dataset: train_benchmark_index(
             BenchmarkLayout.create(dataset, args.root),
             config_path=args.config,
-            output=_dataset_artifacts(args.hgt_output_root, dataset),
+            output=_dataset_artifacts(args.graph_output_root, dataset),
             epochs=args.train_epochs,
             batch_size=args.train_batch_size,
             learning_rate=args.train_learning_rate,
@@ -266,6 +283,7 @@ def _train(args: argparse.Namespace) -> dict[str, dict]:
             seed=args.seed,
             device=args.device,
             reindex=args.reindex,
+            model_type=args.graph_model,
         )
         for dataset in args.datasets
     }

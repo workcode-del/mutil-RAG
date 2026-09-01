@@ -5,7 +5,12 @@ import json
 import logging
 from pathlib import Path
 
-from paper_rag.chart import OpenAICompatibleChartExtractor, SelfEnsemblingChartExtractor
+from paper_rag.chart import (
+    DePlotExtractor,
+    OpenAICompatibleChartExtractor,
+    PPChart2TableExtractor,
+    SelfEnsemblingChartExtractor,
+)
 from paper_rag.config import load_yaml
 from paper_rag.domain import NodeType
 from paper_rag.evidence_graph import (
@@ -19,7 +24,7 @@ from paper_rag.io import read_jsonl
 from paper_rag.log import configure_logging
 from paper_rag.model_source import resolve_model_reference
 from paper_rag.parsing import MinerUAdapter, locate_sentence_batch
-from paper_rag.training import build_query_pairs, embed_training_queries, train_hgt
+from paper_rag.training import build_query_pairs, embed_training_queries, train_graph_index
 from paper_rag.workflow import build_corpus, index_graph
 
 
@@ -46,6 +51,7 @@ def _parse_mineru(args: argparse.Namespace) -> int:
             node.provenance["location_level"] = location.level
     graph = EvidenceGraph()
     graph.extend(parsed.nodes.values(), parsed.edges)
+    build_figure_text_views(graph)
     save_graph(graph, args.output)
     print(
         json.dumps(
@@ -150,6 +156,9 @@ def _enrich_charts(args: argparse.Namespace) -> int:
     logger.info("Chart enrichment: figures=%d graph=%s", len(entries), args.graph)
     config = load_yaml(args.config)
     chart_config = config.get("chart", {})
+    minimum_confidence = float(chart_config.get("extraction_min_confidence", 0.67))
+    if not 0.0 <= minimum_confidence <= 1.0:
+        raise ValueError("chart.extraction_min_confidence must be in [0, 1]")
     extractor = None
     reports: list[dict[str, object]] = []
 
@@ -164,23 +173,40 @@ def _enrich_charts(args: argparse.Namespace) -> int:
         else:
             if extractor is None:
                 backend = str(chart_config.get("backend", "openai_compatible"))
-                if backend != "openai_compatible":
-                    raise ValueError(
-                        "The unified environment supports chart backend=openai_compatible. "
-                        "PP-Chart2Table requires Transformers 5.x and must be exposed as an "
-                        "external service or used only in a separate baseline environment."
+                download = config.get("model_download", {})
+                common = {
+                    "model_name": str(chart_config["model"]),
+                    "model_source": str(
+                        chart_config.get("model_source", download.get("source", "modelscope"))
+                    ),
+                    "local_path": chart_config.get("local_path"),
+                    "modelscope_id": chart_config.get("modelscope_id"),
+                    "model_cache_dir": download.get("cache_dir", "data/models"),
+                }
+                if backend == "openai_compatible":
+                    base = OpenAICompatibleChartExtractor(
+                        base_url=str(chart_config["base_url"]),
+                        model=str(chart_config["model"]),
+                        api_key_env=str(chart_config.get("api_key_env", "PAPER_RAG_API_KEY")),
+                        timeout=float(chart_config.get("timeout", 120)),
+                        temperature=float(chart_config.get("temperature", 0.2)),
                     )
-                base = OpenAICompatibleChartExtractor(
-                    base_url=str(chart_config["base_url"]),
-                    model=str(chart_config["model"]),
-                    api_key_env=str(chart_config.get("api_key_env", "PAPER_RAG_API_KEY")),
-                    timeout=float(chart_config.get("timeout", 120)),
-                    temperature=float(chart_config.get("temperature", 0.2)),
-                )
-                extractor = SelfEnsemblingChartExtractor(
-                    base.extract,
-                    repeats=int(chart_config.get("self_ensemble_repeats", 3)),
-                )
+                    extractor = SelfEnsemblingChartExtractor(
+                        base.extract,
+                        repeats=int(chart_config.get("self_ensemble_repeats", 3)),
+                    )
+                elif backend == "pp_chart2table":
+                    extractor = PPChart2TableExtractor(
+                        device=chart_config.get("device", 0), **common
+                    )
+                elif backend == "deplot":
+                    extractor = DePlotExtractor(
+                        device=str(chart_config.get("device", "cuda")), **common
+                    )
+                else:
+                    raise ValueError(
+                        "chart.backend must be one of: openai_compatible, pp_chart2table, deplot"
+                    )
             figure = graph.nodes.get(figure_id)
             if figure is None:
                 raise KeyError(f"Unknown figure_id in chart manifest: {figure_id}")
@@ -190,6 +216,18 @@ def _enrich_charts(args: argparse.Namespace) -> int:
             confidence = float(result.confidence or 0.0)
             uncertainty = result.uncertainty
             extractor_name = result.extractor
+
+        if not table.strip() or status not in {"ok", "provided"} or confidence < minimum_confidence:
+            reports.append(
+                {
+                    "figure_id": figure_id,
+                    "chart_node_id": None,
+                    "status": "skipped",
+                    "parse_status": status,
+                    "confidence": confidence,
+                }
+            )
+            continue
 
         chart_node_id = attach_chart_data(
             graph,
@@ -262,7 +300,7 @@ def _train_index(args: argparse.Namespace) -> int:
         args.config,
         batch_size=args.batch_size,
     )
-    artifacts = train_hgt(
+    artifacts = train_graph_index(
         args.graph,
         args.base_embeddings,
         pairs,
@@ -277,6 +315,8 @@ def _train_index(args: argparse.Namespace) -> int:
         hidden_dimension=int(graph_config.get("hidden_dimension", 256)),
         layers=int(graph_config.get("layers", 2)),
         heads=int(graph_config.get("heads", 4)),
+        model_type=args.model_type,
+        rgcn_bases=int(graph_config.get("rgcn_bases", 8)),
     )
     print(json.dumps({"query_pairs": str(pairs), "artifacts": str(artifacts)}, indent=2))
     return 0
@@ -345,7 +385,7 @@ def build_parser() -> argparse.ArgumentParser:
     index.add_argument("--config", default="configs/default.yaml")
     index.set_defaults(handler=_index_graph)
     train = commands.add_parser(
-        "train-index", help="Build hard query pairs and train the relation-supervised HGT index"
+        "train-index", help="Train an HGT or R-GCN scientific graph index"
     )
     train.add_argument("--graph", required=True)
     train.add_argument("--samples", required=True, help="Benchmark train JSONL")
@@ -359,6 +399,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--relation-weight", type=float, default=0.2)
     train.add_argument("--seed", type=int, default=42)
     train.add_argument("--device", default="cuda")
+    train.add_argument("--model-type", choices=("hgt", "rgcn"), default="hgt")
     train.set_defaults(handler=_train_index)
     from paper_rag.benchmarking.cli import add_benchmark_parser
 

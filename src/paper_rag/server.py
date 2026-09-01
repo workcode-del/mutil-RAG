@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--graph", required=True, help="Merged evidence graph JSON")
     parser.add_argument("--config", default="configs/default.yaml")
-    parser.add_argument("--hgt-artifacts")
+    parser.add_argument("--graph-artifacts", "--hgt-artifacts", dest="graph_artifacts")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--disable-reranker", action="store_true")
@@ -38,7 +38,7 @@ def main() -> None:
     pipeline = build_deployed_pipeline(
         graph_path=args.graph,
         config_path=args.config,
-        hgt_artifact_dir=args.hgt_artifacts,
+        graph_artifact_dir=args.graph_artifacts,
         enable_reranker=not args.disable_reranker,
         enable_generator=args.enable_generator,
     )

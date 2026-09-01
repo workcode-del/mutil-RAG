@@ -1,10 +1,5 @@
-project:
-  data_dir: data
-  artifacts_dir: outputs
-
 # 默认单环境、本进程运行。HTTP模式只用于显存隔离或远程部署。
 runtime:
-  mode: local
   device: cuda
   qwen3_vl_retrieval_repo: third_party/Qwen3-VL-Embedding
 
@@ -13,16 +8,7 @@ model_download:
   source: modelscope
   cache_dir: data/models
 
-parsing:
-  backend: mineru
-  sentence_locator: pymupdf
-  figure_reference_patterns:
-    - '(?i)\bfig(?:ure)?\.?\s*(\d+[a-z]?)'
-
 chart:
-  enabled: true
-  accept_types: [line_chart]
-  min_classifier_confidence: 0.70
   # 主环境中的Transformers 4.57.6需同时兼容MinerU与Qwen检索。
   # PP-Chart2Table依赖Transformers 5.x，因此默认通过外部多模态API解析折线图。
   backend: openai_compatible
@@ -32,10 +18,7 @@ chart:
   timeout: 120
   temperature: 0.2
   self_ensemble_repeats: 3
-  low_confidence_policy: retrieve_only
-  baseline_models:
-    - google/deplot
-    - PaddlePaddle/PP-Chart2Table_safetensors
+  extraction_min_confidence: 0.67
 
 embedding:
   backend: qwen3_vl
@@ -44,17 +27,14 @@ embedding:
   modelscope_id: Qwen/Qwen3-VL-Embedding-2B
   local_path:
   dimension: 2048
-  normalize: true
   text_batch_size: 64
   image_batch_size: 8
   query_instruction: Retrieve scientific evidence that answers the question.
 
 vector_store:
-  backend: qdrant
   mode: local
   path: data/index/qdrant
   collection: scientific_evidence
-  distance: cosine
   per_type_top_k: 25
   upload_batch_size: 4096
   upload_parallel: 1
@@ -63,8 +43,7 @@ graph_index:
   hidden_dimension: 256
   layers: 2
   heads: 4
-  residual: true
-  add_reverse_edges: true
+  rgcn_bases: 8
 
 reranker:
   enabled: true
@@ -77,11 +56,11 @@ reranker:
 
 retrieval:
   candidate_hops: 2
+  min_edge_confidence: 0.8
   lambda_values: [0.5, 1.0, 2.0]
   slot_weight: 0.4
   entity_weight: 0.3
   redundancy_weight: 0.2
-  max_nodes_per_paper: 100
   budget:
     text_tokens: 4096
     image_unit: 512
@@ -94,7 +73,6 @@ retrieval:
     semantically_similar: 1.20
 
 generation:
-  provider: openai_compatible
   base_url: https://chat.tianhe-tech.com/v1/
   model: Qwen3.5-397B-A17B
   require_evidence_ids: true

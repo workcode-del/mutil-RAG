@@ -85,9 +85,19 @@ class PCSTEvidenceRetriever:
         )
         if not candidates:
             return EvidenceForest([], 0, self.config.budget)
-        best = max(candidates, key=lambda tree: (tree.relevance, -tree.cost))
-        best.metadata["retrieval_method"] = "pcst_closure" if self.policy else "pcst"
-        return forest_from_trees([best], self.config.budget)
+        best_by_paper: dict[str, EvidenceTree] = {}
+        for candidate in candidates:
+            current = best_by_paper.get(candidate.paper_id)
+            if current is None or (candidate.relevance, -candidate.cost) > (
+                current.relevance,
+                -current.cost,
+            ):
+                best_by_paper[candidate.paper_id] = candidate
+        method = "pcst_closure" if self.policy else "pcst"
+        trees = list(best_by_paper.values())
+        for tree in trees:
+            tree.metadata["retrieval_method"] = method
+        return forest_from_trees(trees, self.config.budget)
 
 
 def _ppr_rank(
@@ -102,11 +112,15 @@ def _ppr_rank(
         return hits
     hit_by_id = {hit.node_id: hit for hit in hits}
     node_ids = set(hit_by_id)
-    neighbors = {
-        node_id: graph.neighbors(node_id) & node_ids
-        for node_id in node_ids
-        if node_id in graph.nodes
-    }
+    neighbors = {}
+    for node_id in node_ids:
+        if node_id not in graph.nodes:
+            continue
+        neighbors[node_id] = {
+            edge.dst if edge.src == node_id else edge.src
+            for edge in graph.incident_edges(node_id)
+            if edge.confidence >= 0.8
+        } & node_ids
     weights = {node_id: max(hit.score, 0.0) for node_id, hit in hit_by_id.items()}
     total = sum(weights.values())
     personalization = {

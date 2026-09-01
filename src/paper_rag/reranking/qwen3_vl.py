@@ -38,6 +38,15 @@ class Qwen3VLReranker:
                 "Clone https://github.com/QwenLM/Qwen3-VL-Embedding and set "
                 "QWEN3_VL_RETRIEVAL_REPO to that directory"
             ) from exc
+        if device not in {"cpu", "cuda"}:
+            raise ValueError("reranker.device must be cpu or cuda")
+        if device.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError("reranker.device=cuda but PyTorch cannot access a CUDA GPU")
+        if device == "cpu" and torch.cuda.is_available():
+            raise RuntimeError(
+                "The official Qwen3-VL adapter auto-selects CUDA. Set CUDA_VISIBLE_DEVICES "
+                "before startup to force CPU execution."
+            )
         resolved_model = resolve_model_reference(
             model_name,
             local_path=local_path,

@@ -20,6 +20,9 @@ class HTTPEmbedder:
     def embed_images(self, image_paths: Sequence[str]) -> np.ndarray:
         return self._post("image", {"values": list(image_paths)})
 
+    def embed_mixed(self, items: Sequence[dict]) -> np.ndarray:
+        return self._post("mixed", {"items": list(items)})
+
     def _post(self, kind: str, payload: dict) -> np.ndarray:
         try:
             import requests

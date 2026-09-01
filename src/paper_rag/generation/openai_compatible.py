@@ -19,11 +19,13 @@ class OpenAICompatibleGenerator:
         model: str,
         api_key_env: str = "PAPER_RAG_API_KEY",
         timeout: float = 120.0,
+        require_evidence_ids: bool = True,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key_env = api_key_env
         self.timeout = timeout
+        self.require_evidence_ids = require_evidence_ids
 
     def generate(
         self, query: QuerySpec, forest: EvidenceForest, graph: EvidenceGraph
@@ -65,8 +67,15 @@ class OpenAICompatibleGenerator:
         raw = response.json()
         content = raw["choices"][0]["message"]["content"]
         parsed = json.loads(content)
-        evidence_ids = [str(value) for value in parsed.get("evidence_ids", [])]
+        evidence_ids = list(
+            dict.fromkeys(str(value) for value in parsed.get("evidence_ids", []))
+        )
         invalid = set(evidence_ids) - forest.node_ids
         if invalid:
-            raise ValueError(f"Generator cited evidence outside retrieved forest: {sorted(invalid)}")
-        return Answer(str(parsed.get("answer", "")), evidence_ids, raw)
+            raise ValueError(
+                f"Generator cited evidence outside retrieved forest: {sorted(invalid)}"
+            )
+        answer_text = str(parsed.get("answer", ""))
+        if self.require_evidence_ids and answer_text.strip() and not evidence_ids:
+            raise ValueError("Generator returned a non-empty answer without evidence IDs")
+        return Answer(answer_text, evidence_ids, raw)

@@ -13,6 +13,10 @@ def attach_chart_data(
     extractor: str = "unknown",
     uncertainty: float | None = None,
 ) -> str:
+    if not linearized_table.strip():
+        raise ValueError("ChartData requires a non-empty linearized table")
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError("ChartData confidence must be in [0, 1]")
     figure = graph.nodes[figure_id]
     if figure.node_type is not NodeType.FIGURE:
         raise ValueError("ChartData can only be derived from a Figure")

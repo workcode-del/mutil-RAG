@@ -23,7 +23,7 @@ def main() -> None:
     parser.add_argument("--per-type-top-k", type=int)
     parser.add_argument("--ranking-k", type=int, nargs="+", default=(1, 3, 5, 10))
     parser.add_argument("--scope", choices=("sample", "corpus"), default="sample")
-    parser.add_argument("--hgt-artifacts")
+    parser.add_argument("--graph-artifacts", "--hgt-artifacts", dest="graph_artifacts")
     parser.add_argument("--disable-reranker", action="store_true")
     parser.add_argument("--enable-generator", action="store_true")
     parser.add_argument("--output", default="outputs/evaluation.json")
@@ -35,7 +35,7 @@ def main() -> None:
     pipeline = build_deployed_pipeline(
         graph_path=args.graph,
         config_path=args.config,
-        hgt_artifact_dir=args.hgt_artifacts,
+        graph_artifact_dir=args.graph_artifacts,
         enable_reranker=not args.disable_reranker,
         enable_generator=args.enable_generator,
         candidate_backend=args.candidate_backend,
@@ -46,7 +46,7 @@ def main() -> None:
         "candidate_backend": args.candidate_backend,
         "retrieval_method": args.retrieval_method,
         "reranker": not args.disable_reranker,
-        "hgt": bool(args.hgt_artifacts),
+        "graph_index": bool(args.graph_artifacts),
         "generator": args.enable_generator,
         "selection_top_k": args.selection_top_k,
         "per_type_top_k": args.per_type_top_k,

@@ -21,6 +21,10 @@ class BatchRequest(BaseModel):
     values: list[str]
 
 
+class MixedRequest(BaseModel):
+    items: list[dict[str, object]]
+
+
 @app.on_event("startup")
 def load_model() -> None:
     global model
@@ -66,3 +70,8 @@ def embed_text(request: BatchRequest) -> dict:
 @app.post("/embed/image")
 def embed_image(request: BatchRequest) -> dict:
     return {"vectors": active_model().embed_images(request.values).tolist()}
+
+
+@app.post("/embed/mixed")
+def embed_mixed(request: MixedRequest) -> dict:
+    return {"vectors": active_model().embed_mixed(request.items).tolist()}

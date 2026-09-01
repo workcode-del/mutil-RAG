@@ -11,8 +11,9 @@ class ClosurePolicy:
     figure_requires_caption: bool = True
     table_requires_caption: bool = True
     chart_requires_figure: bool = True
-    sentence_reference_requires_figure: bool = True
-    include_locator_nodes: bool = False
+    sentence_reference_requires_target: bool = True
+    mandatory_only: bool = True
+    min_confidence: float = 0.8
 
 
 def evidence_closure(
@@ -31,14 +32,16 @@ def evidence_closure(
         additions: set[str] = set()
         for node_id in closed:
             node = graph.nodes[node_id]
-            incident = graph.incident_edges(node_id)
-            if node.node_type is NodeType.FIGURE and policy.figure_requires_caption:
-                additions.update(
-                    edge.src
-                    for edge in incident
-                    if edge.relation is RelationType.CAPTION_OF and edge.dst == node_id
-                )
-            if node.node_type is NodeType.TABLE and policy.table_requires_caption:
+            incident = [
+                edge
+                for edge in graph.incident_edges(node_id)
+                if edge.confidence >= policy.min_confidence
+                and (not policy.mandatory_only or edge.mandatory_for_closure)
+            ]
+            if node.node_type in {NodeType.FIGURE, NodeType.TABLE} and (
+                (node.node_type is NodeType.FIGURE and policy.figure_requires_caption)
+                or (node.node_type is NodeType.TABLE and policy.table_requires_caption)
+            ):
                 additions.update(
                     edge.src
                     for edge in incident
@@ -50,7 +53,7 @@ def evidence_closure(
                     for edge in incident
                     if edge.relation is RelationType.DERIVED_FROM and edge.src == node_id
                 )
-            if node.node_type is NodeType.SENTENCE and policy.sentence_reference_requires_figure:
+            if node.node_type is NodeType.SENTENCE and policy.sentence_reference_requires_target:
                 additions.update(
                     edge.dst
                     for edge in incident

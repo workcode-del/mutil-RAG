@@ -49,8 +49,15 @@ class Qwen3VLEmbedder:
                 "Clone https://github.com/QwenLM/Qwen3-VL-Embedding and set "
                 "QWEN3_VL_RETRIEVAL_REPO to that directory"
             ) from exc
+        if device not in {"cpu", "cuda"}:
+            raise ValueError("embedding.device must be cpu or cuda")
         if device.startswith("cuda") and not torch.cuda.is_available():
             raise RuntimeError("embedding.device=cuda but PyTorch cannot access a CUDA GPU")
+        if device == "cpu" and torch.cuda.is_available():
+            raise RuntimeError(
+                "The official Qwen3-VL adapter auto-selects CUDA. Set CUDA_VISIBLE_DEVICES "
+                "before startup to force CPU execution."
+            )
 
         self.dimension = dimension
         self.query_instruction = query_instruction
@@ -71,7 +78,7 @@ class Qwen3VLEmbedder:
         kwargs = {
             "model_name_or_path": resolved_model,
             "max_length": max_length,
-            "dtype": torch.bfloat16 if device.startswith("cuda") else torch.float32,
+            "torch_dtype": torch.bfloat16 if device.startswith("cuda") else torch.float32,
         }
         if device.startswith("cuda") and find_spec("flash_attn") is not None:
             kwargs["attn_implementation"] = "flash_attention_2"

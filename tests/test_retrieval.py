@@ -1,5 +1,6 @@
 from paper_rag.domain import (
     EvidenceEdge,
+    EvidenceTree,
     EvidenceNode,
     NodeType,
     QuerySpec,
@@ -26,8 +27,12 @@ def _baseline_graph() -> EvidenceGraph:
             EvidenceNode("p:c", "p", NodeType.CAPTION, text="Figure caption"),
         ],
         [
-            EvidenceEdge("p:s", "p:f", RelationType.REFERS_TO),
-            EvidenceEdge("p:c", "p:f", RelationType.CAPTION_OF),
+            EvidenceEdge(
+                "p:s", "p:f", RelationType.REFERS_TO, mandatory_for_closure=True
+            ),
+            EvidenceEdge(
+                "p:c", "p:f", RelationType.CAPTION_OF, mandatory_for_closure=True
+            ),
         ],
     )
     return graph
@@ -110,6 +115,35 @@ def test_typed_evidence_closure_reaches_a_fixed_point() -> None:
     assert evidence_closure(graph, {"p:t1"}) == {"p:t1", "p:tc1"}
 
 
+def test_closure_ignores_heuristic_or_nonmandatory_edges() -> None:
+    graph = EvidenceGraph()
+    graph.extend(
+        [
+            EvidenceNode("p:f", "p", NodeType.FIGURE, image_path="figure.png"),
+            EvidenceNode("p:weak", "p", NodeType.CAPTION, text="heuristic"),
+            EvidenceNode("p:optional", "p", NodeType.CAPTION, text="optional"),
+        ],
+        [
+            EvidenceEdge(
+                "p:weak",
+                "p:f",
+                RelationType.CAPTION_OF,
+                confidence=0.7,
+                mandatory_for_closure=True,
+            ),
+            EvidenceEdge(
+                "p:optional",
+                "p:f",
+                RelationType.CAPTION_OF,
+                confidence=1.0,
+                mandatory_for_closure=False,
+            ),
+        ],
+    )
+
+    assert evidence_closure(graph, {"p:f"}) == {"p:f"}
+
+
 def test_forest_is_closed_and_budgeted() -> None:
     graph = EvidenceGraph()
     for paper in ("p1", "p2"):
@@ -122,8 +156,18 @@ def test_forest_is_closed_and_budgeted() -> None:
                 EvidenceNode(f"{paper}:c", paper, NodeType.CAPTION, text="Figure 1. strength"),
             ],
             [
-                EvidenceEdge(f"{paper}:s", f"{paper}:f", RelationType.REFERS_TO),
-                EvidenceEdge(f"{paper}:c", f"{paper}:f", RelationType.CAPTION_OF),
+                EvidenceEdge(
+                    f"{paper}:s",
+                    f"{paper}:f",
+                    RelationType.REFERS_TO,
+                    mandatory_for_closure=True,
+                ),
+                EvidenceEdge(
+                    f"{paper}:c",
+                    f"{paper}:f",
+                    RelationType.CAPTION_OF,
+                    mandatory_for_closure=True,
+                ),
             ],
         )
     hits = [
@@ -141,6 +185,28 @@ def test_forest_is_closed_and_budgeted() -> None:
     assert forest.trees
     for tree in forest.trees:
         assert {f"{tree.paper_id}:f", f"{tree.paper_id}:c"}.issubset(tree.node_ids)
+
+
+def test_ec_bfr_selects_only_one_lambda_candidate_per_paper() -> None:
+    graph = EvidenceGraph()
+    graph.extend(
+        [
+            EvidenceNode("p:a", "p", NodeType.SENTENCE, text="a"),
+            EvidenceNode("p:b", "p", NodeType.SENTENCE, text="b"),
+        ],
+        [],
+    )
+    retriever = EvidenceClosureBudgetedForestRetriever(
+        graph, ECBFRConfig(budget=100, image_unit=1)
+    )
+    candidates = [
+        EvidenceTree("p", {"p:a"}, relevance=1.0, cost=1),
+        EvidenceTree("p", {"p:b"}, relevance=0.9, cost=1),
+    ]
+
+    forest = retriever._select_forest(QuerySpec("q"), candidates)
+
+    assert len(forest.trees) == 1
 
 
 def test_rrf_does_not_depend_on_raw_score_scale() -> None:

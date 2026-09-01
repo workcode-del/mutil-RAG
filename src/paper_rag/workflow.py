@@ -12,7 +12,7 @@ import numpy as np
 from paper_rag.bootstrap import build_embedder, build_vector_store
 from paper_rag.config import load_yaml
 from paper_rag.domain import NodeType
-from paper_rag.evidence_graph import EvidenceGraph, load_graph, save_graph
+from paper_rag.evidence_graph import EvidenceGraph, build_figure_text_views, load_graph, save_graph
 from paper_rag.indexing import IndexingReport, compute_base_embeddings, upsert_base_embeddings
 from paper_rag.parsing import MinerUAdapter
 
@@ -52,6 +52,7 @@ def ingest_pdfs(
         paper_id = _content_stem(content)
         paper = MinerUAdapter().from_json(content, paper_id)
         graph.extend(paper.nodes.values(), paper.edges)
+    build_figure_text_views(graph)
     save_graph(graph, graph_path)
     logger.info(
         "Evidence graph ready: nodes=%d edges=%d output=%s",

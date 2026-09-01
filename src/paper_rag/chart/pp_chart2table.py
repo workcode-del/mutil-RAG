@@ -30,7 +30,9 @@ class PPChart2TableExtractor:
         try:
             from transformers import pipeline
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("Install the unified dependencies in the paper-rag environment") from exc
+            raise RuntimeError(
+                "Install the unified dependencies in the paper-rag environment"
+            ) from exc
         resolved_model = resolve_model_reference(
             model_name,
             local_path=local_path,

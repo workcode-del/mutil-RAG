@@ -13,8 +13,14 @@ from paper_rag.bootstrap import build_embedder
 from paper_rag.config import load_yaml
 from paper_rag.domain import EvidenceEdge
 from paper_rag.evidence_graph import EvidenceGraph, load_graph
-from paper_rag.io import read_jsonl, write_jsonl
-from paper_rag.models import HGTConfig, build_heterodata, create_hgt_model
+from paper_rag.io import iter_jsonl, read_jsonl, write_jsonl
+from paper_rag.models import (
+    HGTConfig,
+    RGCNConfig,
+    build_heterodata,
+    create_hgt_model,
+    create_rgcn_model,
+)
 from paper_rag.models.losses import query_evidence_margin_loss, relation_info_nce
 
 
@@ -32,44 +38,50 @@ def build_query_pairs(
     graph = load_graph(graph_path)
     rng = random.Random(seed)
     embeddings = _load_npz(embeddings_path) if embeddings_path else {}
-    rows = []
-    for sample in read_jsonl(samples_path):
-        positives = [node_id for node_id in sample["relevant_node_ids"] if node_id in graph.nodes]
-        paper_ids = {str(value) for value in sample.get("paper_ids", [])}
-        if sample.get("paper_id") is not None:
-            paper_ids.add(str(sample["paper_id"]))
-        if not paper_ids:
-            paper_ids.update(graph.nodes[node_id].paper_id for node_id in positives)
-        candidates = sample.get("candidate_node_ids") or [
-            node_id
-            for node_id, node in graph.nodes.items()
-            if node.paper_id in paper_ids
-        ]
-        negatives = [node_id for node_id in candidates if node_id not in positives]
-        if not positives or not negatives:
-            continue
-        for positive in positives:
-            same_type = [
-                node_id
-                for node_id in negatives
-                if graph.nodes[node_id].node_type is graph.nodes[positive].node_type
+    pair_count = 0
+
+    def generate_pairs():
+        nonlocal pair_count
+        for sample in iter_jsonl(samples_path):
+            positives = [
+                node_id for node_id in sample["relevant_node_ids"] if node_id in graph.nodes
             ]
-            pool = same_type or negatives
-            negative = (
-                max(pool, key=lambda node_id: _similarity(embeddings, positive, node_id))
-                if positive in embeddings
-                else rng.choice(pool)
-            )
-            rows.append(
-                {
+            paper_ids = {str(value) for value in sample.get("paper_ids", [])}
+            if sample.get("paper_id") is not None:
+                paper_ids.add(str(sample["paper_id"]))
+            if not paper_ids:
+                paper_ids.update(graph.nodes[node_id].paper_id for node_id in positives)
+            raw_candidates = sample.get("candidate_node_ids") or [
+                node_id
+                for node_id, node in graph.nodes.items()
+                if node.paper_id in paper_ids
+            ]
+            candidates = [node_id for node_id in raw_candidates if node_id in graph.nodes]
+            negatives = [node_id for node_id in candidates if node_id not in positives]
+            if not positives or not negatives:
+                continue
+            for positive in positives:
+                same_type = [
+                    node_id
+                    for node_id in negatives
+                    if graph.nodes[node_id].node_type is graph.nodes[positive].node_type
+                ]
+                pool = same_type or negatives
+                negative = (
+                    max(pool, key=lambda node_id: _similarity(embeddings, positive, node_id))
+                    if positive in embeddings
+                    else rng.choice(pool)
+                )
+                pair_count += 1
+                yield {
                     "query_id": str(sample["query_id"]),
                     "query": str(sample["query"]),
                     "positive_node_id": positive,
                     "negative_node_id": negative,
                 }
-            )
-    target = write_jsonl(output, rows)
-    logger.info("Training pairs ready: pairs=%d output=%s", len(rows), target)
+
+    target = write_jsonl(output, generate_pairs())
+    logger.info("Training pairs ready: pairs=%d output=%s", pair_count, target)
     return target
 
 
@@ -80,10 +92,12 @@ def embed_training_queries(
     *,
     batch_size: int = 16,
 ) -> Path:
-    samples = read_jsonl(samples_path)
     embedder = build_embedder(load_yaml(config_path))
     vectors: dict[str, np.ndarray] = {}
-    queries = {str(sample["query_id"]): str(sample["query"]) for sample in samples}
+    queries = {
+        str(sample["query_id"]): str(sample["query"])
+        for sample in iter_jsonl(samples_path)
+    }
     logger.info("Embedding training queries: unique_queries=%d", len(queries))
     items = list(queries.items())
     for start in range(0, len(items), batch_size):
@@ -115,6 +129,8 @@ def train_hgt(
     hidden_dimension: int = 256,
     layers: int = 2,
     heads: int = 4,
+    model_type: str = "hgt",
+    rgcn_bases: int = 8,
 ) -> Path:
     import torch
 
@@ -132,16 +148,33 @@ def train_hgt(
     base_embeddings = np.load(base_embeddings_path)
     query_embeddings = np.load(query_embeddings_path)
     input_dimension = int(base_embeddings[base_embeddings.files[0]].shape[-1])
-    logger.info("Preparing batched HGT model: nodes=%d device=%s", len(graph.nodes), device)
-    model = create_hgt_model(
-        _graph_metadata(graph),
-        HGTConfig(input_dimension, hidden_dimension, layers, heads),
+    normalized_model_type = model_type.strip().lower()
+    if normalized_model_type not in {"hgt", "rgcn"}:
+        raise ValueError("model_type must be hgt or rgcn")
+    metadata_schema = _graph_metadata(graph)
+    model = (
+        create_hgt_model(
+            metadata_schema,
+            HGTConfig(input_dimension, hidden_dimension, layers, heads),
+        )
+        if normalized_model_type == "hgt"
+        else create_rgcn_model(
+            metadata_schema,
+            RGCNConfig(input_dimension, hidden_dimension, layers, rgcn_bases),
+        )
     ).to(device)
+    logger.info(
+        "Preparing batched %s model: nodes=%d device=%s",
+        normalized_model_type.upper(),
+        len(graph.nodes),
+        device,
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     train_papers = {graph.nodes[row["positive_node_id"]].paper_id for row in samples}
     relations = _relation_triples(graph, train_papers, seed)
     logger.info(
-        "HGT training: nodes=%d query_pairs=%d relation_triples=%d epochs=%d device=%s",
+        "%s training: nodes=%d query_pairs=%d relation_triples=%d epochs=%d device=%s",
+        normalized_model_type.upper(),
         len(graph.nodes),
         len(samples),
         len(relations),
@@ -186,7 +219,8 @@ def train_hgt(
             optimizer.step()
             epoch_loss += float(loss.detach().cpu()) * len(batch)
         logger.info(
-            "HGT epoch %d/%d loss=%.6f",
+            "%s epoch %d/%d loss=%.6f",
+            normalized_model_type.upper(),
             epoch + 1,
             epochs,
             epoch_loss / len(samples),
@@ -194,13 +228,15 @@ def train_hgt(
 
     metadata = {
         "graph_sha256": hashlib.sha256(Path(graph_path).read_bytes()).hexdigest(),
+        "model_type": normalized_model_type,
         "query_pairs": len(samples),
         "train_query_ids": sorted({row["query_id"] for row in samples}),
         "relation_triples": len(relations),
         "input_dimension": input_dimension,
         "hidden_dimension": hidden_dimension,
         "layers": layers,
-        "heads": heads,
+        "heads": heads if normalized_model_type == "hgt" else None,
+        "rgcn_bases": rgcn_bases if normalized_model_type == "rgcn" else None,
         "epochs": epochs,
         "batch_size": batch_size,
         "relation_weight": relation_weight,
@@ -217,13 +253,16 @@ def train_hgt(
     )
     base_embeddings.close()
     query_embeddings.close()
-    logger.info("HGT artifacts ready: %s", artifacts)
+    logger.info("%s artifacts ready: %s", normalized_model_type.upper(), artifacts)
     return artifacts
 
 
+train_graph_index = train_hgt
+
+
 def _load_npz(path: str | Path) -> dict[str, np.ndarray]:
-    archive = np.load(path)
-    return {key: archive[key] for key in archive.files}
+    with np.load(path) as archive:
+        return {key: archive[key] for key in archive.files}
 
 
 def _similarity(
@@ -244,6 +283,7 @@ def _relation_triples(
         for edge in graph.edges
         if graph.nodes[edge.src].paper_id in train_papers
         and edge.relation.value in relations
+        and edge.confidence >= 0.8
     ]
     neighbors: dict[str, set[str]] = defaultdict(set)
     pools: dict[tuple[str, object], list[str]] = defaultdict(list)
@@ -302,7 +342,7 @@ def _validate_paper_local_edges(graph: EvidenceGraph) -> None:
         graph.nodes[edge.src].paper_id != graph.nodes[edge.dst].paper_id
         for edge in graph.edges
     ):
-        raise ValueError("Batched HGT requires all evidence edges to stay within one paper")
+        raise ValueError("Batched graph training requires all evidence edges within one paper")
 
 
 def _pair_papers(graph: EvidenceGraph, samples: list[dict]) -> set[str]:

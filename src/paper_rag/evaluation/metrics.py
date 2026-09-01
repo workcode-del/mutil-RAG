@@ -68,6 +68,14 @@ def result_metrics(
         "selected_nodes": float(len(selected)),
         "latency_ms": latency_ms,
     }
+    skeleton_backends = {
+        str(tree.metadata["skeleton_backend"])
+        for tree in result.forest.trees
+        if "skeleton_backend" in tree.metadata
+    }
+    metrics["pcst_fallback"] = (
+        float(skeleton_backends != {"pcst_fast"}) if skeleton_backends else None
+    )
     node_types = (
         NodeType.SENTENCE,
         NodeType.FIGURE,

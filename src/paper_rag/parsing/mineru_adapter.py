@@ -283,8 +283,8 @@ class MinerUAdapter:
                     caption.node_id,
                     target.node_id,
                     RelationType.CAPTION_OF,
-                    confidence=0.9,
-                    mandatory_for_closure=True,
+                    confidence=0.7,
+                    mandatory_for_closure=False,
                     attributes={"alignment": "same_page_nearest_block"},
                 )
             )

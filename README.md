@@ -45,9 +45,9 @@ flowchart LR
 |---|---|
 | `src/paper_rag/parsing` | MinerU版本隔离、句子切分、图表引用和bbox回填 |
 | `src/paper_rag/chart` | PP-Chart2Table、VLM自集成及DePlot基线 |
-| `src/paper_rag/embedding` | Qwen3-VL-Embedding、HTTP客户端、GME历史基线 |
+| `src/paper_rag/embedding` | Qwen3-VL-Embedding、HTTP客户端、BM25与精确向量基线 |
 | `src/paper_rag/evidence_graph` | 异构证据图、关系构建和ChartData来源记录 |
-| `src/paper_rag/models` | 2048→256维HGT结构适配器及训练损失 |
+| `src/paper_rag/models` | 2048→256维HGT主模型、R-GCN强基线及共享训练损失 |
 | `src/paper_rag/reranking` | Qwen3-VL原图/文本混合重排与HTTP客户端 |
 | `src/paper_rag/retrieval` | RRF、PCST、类型闭包和EC-BFR |
 | `src/paper_rag/generation` | 证据序列化、Qwen3-VL兼容API和引用ID校验 |
@@ -70,7 +70,7 @@ paper-rag benchmark all \
   --datasets peerqa mmdocrag \
   --root data/benchmarks \
   --config configs/default.yaml \
-  --train-hgt
+  --train-graph-index --graph-model hgt
 ```
 
-去掉 `--train-hgt` 可只比较无训练基线；保留它则按 train/test 隔离训练创新点一，并加入完整方法。公开与自定义数据的运行模式、候选范围和指标定义见 [统一评测](docs/EVALUATION.md)。
+去掉 `--train-graph-index` 可只比较无训练基线；保留它则按 train/test 隔离训练图索引，并加入 HGT 完整方法。把 `--graph-model` 改为 `rgcn` 可运行相同协议的 R-GCN 关键对照。公开与自定义数据的运行模式、候选范围和指标定义见 [统一评测](docs/EVALUATION.md)。

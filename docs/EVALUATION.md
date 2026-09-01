@@ -4,7 +4,7 @@
 
 ## 1. 公开数据集
 
-一条命令完成数据准备、Dense 索引、系统矩阵和汇总；`--train-hgt` 还会按隔离划分训练 HGT，并加入 `full`：
+一条命令完成数据准备、Dense 索引、系统矩阵和汇总；`--train-graph-index` 会按隔离划分训练 HGT，并加入 `full`：
 
 ```bash
 paper-rag benchmark all \
@@ -12,7 +12,7 @@ paper-rag benchmark all \
   --root data/benchmarks \
   --config configs/default.yaml \
   --setting 20 \
-  --train-hgt
+  --train-graph-index --graph-model hgt
 ```
 
 也可分阶段运行：
@@ -23,7 +23,18 @@ paper-rag benchmark train --datasets peerqa mmdocrag --root data/benchmarks \
   --config configs/default.yaml
 paper-rag benchmark run --datasets peerqa mmdocrag --root data/benchmarks \
   --config configs/default.yaml --split test --systems dense full \
-  --hgt-artifacts outputs/benchmark_hgt
+  --hgt-artifacts outputs/benchmark_graph
+```
+
+R-GCN 使用与 HGT 相同的基础向量、query/gold 对、同类型 hard negative、关系 InfoNCE、训练轮数和检索后端。建议独立训练两个产物后在同一测试划分比较：
+
+```bash
+paper-rag benchmark train --datasets peerqa --root data/benchmarks \
+  --config configs/default.yaml --graph-model rgcn \
+  --graph-output-root outputs/benchmark_rgcn
+paper-rag benchmark run --datasets peerqa --root data/benchmarks \
+  --config configs/default.yaml --split test --systems rgcn \
+  --rgcn-artifacts outputs/benchmark_rgcn
 ```
 
 已有下载和解析结果会复用；`--force` 重做准备，`--reindex` 重建 embedding 缓存。缓存 sidecar 校验图哈希和 embedding 配置哈希，模型或 query instruction 改变时自动失效。benchmark 在 NPZ 上做精确 cosine 检索，不依赖 Qdrant；在线服务仍使用配置的向量库。
@@ -116,7 +127,7 @@ python scripts/evaluate_retrieval.py data/eval/test.jsonl \
   --graph data/parsed/evidence_graph.json \
   --candidate-backend embedding \
   --retrieval-method ec_bfr \
-  --hgt-artifacts outputs/hgt \
+  --graph-artifacts outputs/hgt \
   --ranking-k 1 3 5 10 \
   --output outputs/eval/full.json
 ```
@@ -136,6 +147,7 @@ python scripts/evaluate_retrieval.py data/eval/test.jsonl \
 | `pcst_closure` | Dense | PCST + 证据闭包 | — |
 | `ec_bfr` | Dense | 闭包 + 硬预算森林 | 无 HGT |
 | `ec_bfr_reranker` | Dense | EC-BFR | Reranker |
+| `rgcn` | Dense + R-GCN | EC-BFR | Reranker，需 R-GCN 训练产物 |
 | `full` | Dense + HGT | EC-BFR | Reranker，需训练产物 |
 
 比较时除目标消融项外，应保持图、候选范围、模型、预算、top-k 和评测 split 相同。

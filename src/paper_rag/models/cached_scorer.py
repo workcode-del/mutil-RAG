@@ -8,8 +8,8 @@ import numpy as np
 from paper_rag.domain import SearchHit
 
 
-class CachedHGTScorer:
-    """Online innovation-one scorer: Wq(query) against cached HGT node vectors."""
+class CachedGraphScorer:
+    """Score candidates against cached HGT or R-GCN node representations."""
 
     def __init__(self, artifact_dir: str | Path, device: str = "cpu") -> None:
         try:
@@ -29,12 +29,13 @@ class CachedHGTScorer:
             if metadata_path.exists()
             else {"hidden_dimension": 256}
         )
+        self.score_name = str(metadata.get("model_type", "hgt"))
         if (
             matrix.ndim != 2
             or matrix.shape[1] != metadata["hidden_dimension"]
             or len(self.node_ids) != len(matrix)
         ):
-            raise ValueError("Invalid HGT artifact dimensions")
+            raise ValueError("Invalid graph-index artifact dimensions")
         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
         self.matrix = matrix / np.maximum(norms, 1e-12)
         self.positions = {node_id: index for index, node_id in enumerate(self.node_ids)}
@@ -49,3 +50,6 @@ class CachedHGTScorer:
             for hit in hits
             if hit.node_id in self.positions
         }
+
+
+CachedHGTScorer = CachedGraphScorer

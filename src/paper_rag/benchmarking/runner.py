@@ -23,13 +23,13 @@ from paper_rag.evaluation import evaluate, load_samples, save_report
 from paper_rag.evaluation.comparison import save_comparison
 from paper_rag.embedding import ExactEmbeddingStore
 from paper_rag.evidence_graph import EvidenceGraph, load_graph
-from paper_rag.models.cached_scorer import CachedHGTScorer
+from paper_rag.models.cached_scorer import CachedGraphScorer
 from paper_rag.retrieval import build_evidence_retriever
 from paper_rag.training import (
     build_query_pairs,
     count_relation_triples,
     embed_training_queries,
-    train_hgt,
+    train_graph_index,
 )
 from paper_rag.workflow import (
     embedding_cache_is_current,
@@ -48,7 +48,7 @@ class BenchmarkSystem:
     candidate_backend: str
     retrieval_method: str
     reranker: bool = False
-    hgt: bool = False
+    graph_model: str | None = None
 
 
 SYSTEMS = {
@@ -61,10 +61,11 @@ SYSTEMS = {
     "pcst_closure": BenchmarkSystem("embedding", "pcst_closure"),
     "ec_bfr": BenchmarkSystem("embedding", "ec_bfr"),
     "ec_bfr_reranker": BenchmarkSystem("embedding", "ec_bfr", reranker=True),
-    "full": BenchmarkSystem("embedding", "ec_bfr", reranker=True, hgt=True),
+    "rgcn": BenchmarkSystem("embedding", "ec_bfr", reranker=True, graph_model="rgcn"),
+    "full": BenchmarkSystem("embedding", "ec_bfr", reranker=True, graph_model="hgt"),
 }
 
-DEFAULT_SYSTEMS = tuple(name for name in SYSTEMS if name != "full")
+DEFAULT_SYSTEMS = tuple(name for name, system in SYSTEMS.items() if system.graph_model is None)
 
 
 def run_benchmark(
@@ -74,6 +75,7 @@ def run_benchmark(
     split: str,
     systems: list[str] | tuple[str, ...] = DEFAULT_SYSTEMS,
     hgt_artifacts: str | Path | None = None,
+    rgcn_artifacts: str | Path | None = None,
     enable_generator: bool = False,
     reindex: bool = False,
     selection_top_k: int = 10,
@@ -82,17 +84,25 @@ def run_benchmark(
     allow_partial: bool = False,
     query_batch_size: int = 64,
 ) -> dict[str, Any]:
-    if "full" in systems and not hgt_artifacts:
-        raise ValueError("The full system requires --hgt-artifacts")
+    selected = [SYSTEMS[name] for name in systems]
+    artifact_paths = {"hgt": hgt_artifacts, "rgcn": rgcn_artifacts}
+    for graph_model in {system.graph_model for system in selected if system.graph_model}:
+        if not artifact_paths[graph_model]:
+            raise ValueError(f"The {graph_model} system requires --{graph_model}-artifacts")
     sample_path = layout.samples(_official_split(layout.name) if split == "official" else split)
     if not layout.graph.exists() or not sample_path.exists():
         raise FileNotFoundError(f"Prepare {layout.name} before running its benchmark")
     _validate_processed_schema(layout)
     if not allow_partial:
         _validate_preparation(layout)
-    if "full" in systems:
-        _validate_hgt_artifacts(layout, sample_path, Path(hgt_artifacts))
-    selected = [SYSTEMS[name] for name in systems]
+    for graph_model, artifact_path in artifact_paths.items():
+        if graph_model in {system.graph_model for system in selected} and artifact_path:
+            _validate_graph_artifacts(
+                layout,
+                sample_path,
+                Path(artifact_path),
+                expected_model_type=graph_model,
+            )
     if any(system.candidate_backend == "embedding" for system in selected):
         ensure_dense_index(layout, config_path, force=reindex)
         logger.info("Loading exact benchmark embedding store: dataset=%s", layout.name)
@@ -103,7 +113,24 @@ def run_benchmark(
     else:
         dense_store = None
 
+    config = load_yaml(config_path)
+    retriever_config = build_retriever_config(config)
     samples = load_samples(sample_path)
+    benchmark_nodes = (
+        dense_store.nodes
+        if dense_store is not None
+        else tuple(load_graph(layout.graph).nodes.values())
+    )
+    structured_query_fraction = sum(
+        len(sample.query.required_slots) > 1 for sample in samples
+    ) / len(samples)
+    entity_annotated_node_fraction = sum(
+        bool(node.attributes.get("entities")) for node in benchmark_nodes
+    ) / max(len(benchmark_nodes), 1)
+    if retriever_config.slot_weight > 0 and structured_query_fraction == 0:
+        logger.warning("Slot utility is inactive: benchmark queries contain no structured slots")
+    if retriever_config.entity_weight > 0 and entity_annotated_node_fraction == 0:
+        logger.warning("Entity novelty is inactive: benchmark nodes contain no entity annotations")
     open_domain = layout.name in OPEN_DOMAIN_DATASETS
     logger.info(
         "Benchmark start: dataset=%s split=%s samples=%d systems=%d",
@@ -112,8 +139,6 @@ def run_benchmark(
         len(samples),
         len(systems),
     )
-    config = load_yaml(config_path)
-    retriever_config = build_retriever_config(config)
     report_paths: list[Path] = []
     summaries: dict[str, Any] = {}
     query_vectors: dict[str, np.ndarray] | None = None
@@ -147,16 +172,18 @@ def run_benchmark(
                 )
                 logger.info(
                     "Benchmark system: dataset=%s system=%s backend=%s "
-                    "retrieval=%s reranker=%s hgt=%s",
+                    "retrieval=%s reranker=%s graph_model=%s",
                     layout.name,
                     name,
                     backend,
                     system.retrieval_method,
                     reranker_enabled,
-                    system.hgt,
+                    system.graph_model,
                 )
                 pipeline.graph_scorer = (
-                    CachedHGTScorer(hgt_artifacts) if system.hgt else None
+                    CachedGraphScorer(artifact_paths[system.graph_model])
+                    if system.graph_model
+                    else None
                 )
                 metadata = {
                     "dataset": layout.name,
@@ -166,7 +193,8 @@ def run_benchmark(
                     "dense_search_backend": "numpy_exact" if backend == "embedding" else None,
                     "retrieval_method": system.retrieval_method,
                     "reranker": reranker_enabled,
-                    "hgt": system.hgt,
+                    "graph_model": system.graph_model,
+                    "hgt": system.graph_model == "hgt",
                     "generator": enable_generator,
                     "selection_top_k": selection_top_k,
                     "per_type_top_k": per_type_top_k,
@@ -179,6 +207,8 @@ def run_benchmark(
                         "batch_amortized_end_to_end" if pipeline.embedder else "online_end_to_end"
                     ),
                     "scope": "corpus" if open_domain else "sample",
+                    "structured_query_fraction": structured_query_fraction,
+                    "entity_annotated_node_fraction": entity_annotated_node_fraction,
                 }
                 report = evaluate(
                     pipeline,
@@ -190,6 +220,16 @@ def run_benchmark(
                     query_vectors=query_vectors if pipeline.embedder else None,
                     query_embedding_ms=query_embedding_ms if pipeline.embedder else 0.0,
                 )
+                if (
+                    system.retrieval_method in {"pcst", "pcst_closure", "ec_bfr"}
+                    and report["summary"].get("macro_pcst_fallback", 0.0) > 0
+                    and not allow_partial
+                ):
+                    raise RuntimeError(
+                        "pcst_fast is unavailable; refusing to publish fallback results. "
+                        "Install the graph dependencies or rerun with --allow-partial "
+                        "for smoke tests."
+                    )
                 target = layout.reports / f"{split}_{name}.json"
                 save_report(report, target)
                 report_paths.append(target)
@@ -267,8 +307,9 @@ def train_benchmark_index(
     seed: int = 42,
     device: str = "cuda",
     reindex: bool = False,
+    model_type: str = "hgt",
 ) -> dict[str, Any]:
-    logger.info("Benchmark HGT training start: dataset=%s", layout.name)
+    logger.info("Benchmark %s training start: dataset=%s", model_type.upper(), layout.name)
     _validate_processed_schema(layout)
     split_statistics = benchmark_split_statistics(layout)
     _validate_training_split(layout)
@@ -288,7 +329,7 @@ def train_benchmark_index(
         batch_size=batch_size,
     )
     graph_config = load_yaml(config_path).get("graph_index", {})
-    artifacts = train_hgt(
+    artifacts = train_graph_index(
         layout.graph,
         layout.processed / "base_embeddings.npz",
         pairs,
@@ -303,13 +344,20 @@ def train_benchmark_index(
         hidden_dimension=int(graph_config.get("hidden_dimension", 256)),
         layers=int(graph_config.get("layers", 2)),
         heads=int(graph_config.get("heads", 4)),
+        model_type=model_type,
+        rgcn_bases=int(graph_config.get("rgcn_bases", 8)),
     )
     metadata = json.loads((artifacts / "training.json").read_text(encoding="utf-8"))
     metadata["dataset"] = layout.name
     metadata["source_splits"] = {layout.name: "train"}
     metadata["split_statistics"] = split_statistics
     write_json(artifacts / "training.json", metadata)
-    logger.info("Benchmark HGT training complete: dataset=%s output=%s", layout.name, artifacts)
+    logger.info(
+        "Benchmark %s training complete: dataset=%s output=%s",
+        model_type.upper(),
+        layout.name,
+        artifacts,
+    )
     return {"dataset": layout.name, "artifacts": str(artifacts.resolve()), **metadata}
 
 
@@ -472,16 +520,24 @@ def _sample_papers(graph: EvidenceGraph, rows: list[dict[str, Any]]) -> set[str]
     return papers
 
 
-def _validate_hgt_artifacts(
-    layout: BenchmarkLayout, samples: Path, artifacts: Path
+def _validate_graph_artifacts(
+    layout: BenchmarkLayout,
+    samples: Path,
+    artifacts: Path,
+    *,
+    expected_model_type: str,
 ) -> None:
     metadata_path = artifacts / "training.json"
     if not metadata_path.exists():
-        return
+        raise FileNotFoundError(f"Missing graph artifact metadata: {metadata_path}")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if metadata.get("model_type", "hgt") != expected_model_type:
+        raise ValueError(
+            f"Expected {expected_model_type} artifacts, got {metadata.get('model_type')}"
+        )
     graph_digest = hashlib.sha256(layout.graph.read_bytes()).hexdigest()
     if metadata.get("graph_sha256") != graph_digest:
-        raise ValueError(f"HGT artifacts do not match the {layout.name} graph")
+        raise ValueError(f"Graph artifacts do not match the {layout.name} graph")
     train_ids = set(metadata.get("train_query_ids", ()))
     evaluation_ids = {row["query_id"] for row in read_jsonl(samples)}
     if train_ids & evaluation_ids:

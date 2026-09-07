@@ -9,6 +9,7 @@ from paper_rag.benchmarking.base import (
     BenchmarkLayout,
     connected_grouped_split,
     grouped_split,
+    validate_prepared_samples,
     write_json,
 )
 from paper_rag.benchmarking.cli import _ranking_cutoffs, _report_summaries
@@ -19,7 +20,11 @@ from paper_rag.benchmarking.multimodalqa import (
     _samples,
     prepare_multimodalqa,
 )
-from paper_rag.benchmarking.page_datasets import _mmlong_samples, _page_node_id
+from paper_rag.benchmarking.page_datasets import (
+    _mmlong_samples,
+    _page_node_id,
+    prepare_m3docvqa,
+)
 from paper_rag.benchmarking.peerqa import _build_official_graph
 from paper_rag.benchmarking.runner import (
     DEFAULT_SYSTEMS,
@@ -29,6 +34,7 @@ from paper_rag.benchmarking.runner import (
     _validate_processed_schema,
     _validate_training_split,
     benchmark_split_statistics,
+    train_benchmark_index,
 )
 from paper_rag.benchmarking.spiqa import _convert_splits
 from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
@@ -43,6 +49,34 @@ def test_rgcn_is_an_explicit_nondefault_graph_baseline() -> None:
     assert SYSTEMS["rgcn"].retrieval_method == SYSTEMS["full"].retrieval_method
     assert SYSTEMS["rgcn"].reranker == SYSTEMS["full"].reranker
     assert "rgcn" not in DEFAULT_SYSTEMS
+
+
+def test_prepared_sample_validation_rejects_empty_and_invalid_artifacts() -> None:
+    graph = EvidenceGraph()
+    with pytest.raises(RuntimeError, match="empty graph"):
+        validate_prepared_samples("fixture", graph, [])
+
+    graph.add_node(EvidenceNode("node", "paper", NodeType.SENTENCE, text="evidence"))
+    with pytest.raises(ValueError, match="invalid evidence IDs"):
+        validate_prepared_samples(
+            "fixture",
+            graph,
+            [
+                {
+                    "query_id": "q1",
+                    "query": "question",
+                    "relevant_node_ids": ["missing"],
+                    "candidate_node_ids": ["node"],
+                }
+            ],
+        )
+
+
+def test_m3docvqa_does_not_claim_official_page_labels(tmp_path) -> None:
+    layout = BenchmarkLayout.create("m3docvqa", tmp_path)
+    with pytest.raises(ValueError, match="rather than gold page IDs"):
+        prepare_m3docvqa(layout, source=None)
+
 
 def test_peerqa_official_rows_build_stable_nodes() -> None:
     graph = _build_official_graph(
@@ -472,6 +506,8 @@ def test_multimodalqa_prepare_reads_current_parquet_snapshot(
     samples = read_jsonl(layout.samples("all"))
 
     assert report["graph_mode"] == "official_parquet_component_graph"
+    assert report["official_benchmark"] is False
+    assert report["evaluation_scope"] == "lilac_component_dev_snapshot"
     assert report["samples"] == 1
     assert report["missing_images"] == []
     assert any((layout.processed / "images").iterdir())
@@ -552,6 +588,44 @@ def test_peerqa_complete_scope_rejects_missing_inputs(tmp_path) -> None:
         assert "missing_papers" in str(error)
     else:
         raise AssertionError("Incomplete full PeerQA preparation was accepted")
+
+
+def test_non_official_preparation_is_diagnostic_only(tmp_path) -> None:
+    layout = BenchmarkLayout.create("m3docvqa", tmp_path)
+    write_json(
+        layout.processed / "prepare_report.json",
+        {
+            "dataset": "m3docvqa",
+            "schema_version": PROCESSED_SCHEMA_VERSION,
+            "official_benchmark": False,
+            "evaluation_scope": "derived_page_labeled_snapshot",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="derived_page_labeled_snapshot"):
+        _validate_preparation(layout)
+
+    with pytest.raises(RuntimeError, match="derived_page_labeled_snapshot"):
+        train_benchmark_index(
+            layout,
+            config_path="unused.yaml",
+            output=tmp_path / "artifacts",
+        )
+
+
+def test_legacy_derived_report_is_not_treated_as_official(tmp_path) -> None:
+    layout = BenchmarkLayout.create("multimodalqa", tmp_path)
+    write_json(
+        layout.processed / "prepare_report.json",
+        {
+            "dataset": "multimodalqa",
+            "schema_version": PROCESSED_SCHEMA_VERSION,
+            "evaluation_scope": "official_all_papers",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="legacy_or_unverified_derived_snapshot"):
+        _validate_preparation(layout)
 
 
 def test_prepare_console_report_summarizes_details() -> None:

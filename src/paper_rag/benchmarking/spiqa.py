@@ -5,7 +5,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from paper_rag.benchmarking.base import PROCESSED_SCHEMA_VERSION, BenchmarkLayout, safe_name
+from paper_rag.benchmarking.base import (
+    PROCESSED_SCHEMA_VERSION,
+    BenchmarkLayout,
+    safe_name,
+    validate_prepared_samples,
+)
 from paper_rag.benchmarking.download import extract_zip, valid_image_file
 from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
@@ -14,6 +19,7 @@ from paper_rag.io import write_json, write_jsonl
 
 logger = logging.getLogger(__name__)
 HF_DATASET = "google/spiqa"
+HF_REVISION = "1774b71511f029b82089a069d75328f25fbf0705"
 SPLIT_FILES = {
     "train": "train_val/SPIQA_train.json",
     "dev": "train_val/SPIQA_val.json",
@@ -55,6 +61,8 @@ def prepare_spiqa(
         )
         image_roots.update(dict.fromkeys(splits, image_root))
     graph, samples, audit = _convert_splits(metadata, image_roots)
+    for split, rows in samples.items():
+        validate_prepared_samples(f"SPIQA {split}", graph, rows)
 
     save_graph(graph, layout.graph)
     for split, rows in samples.items():
@@ -63,11 +71,15 @@ def prepare_spiqa(
     report = {
         "dataset": "spiqa",
         "schema_version": PROCESSED_SCHEMA_VERSION,
+        "source_revision": HF_REVISION if source is None else None,
+        "official_benchmark": True,
         "graph_mode": "official_figure_table_caption_graph",
         "evaluation_scope": "official_all_papers",
         "official_test_split": "test-A",
         "samples": {split: len(rows) for split, rows in samples.items()},
         "nodes": len(graph.nodes),
+        "edges": len(graph.edges),
+        "graph_training_signal": bool(graph.edges),
         "papers": len({node.paper_id for node in graph.nodes.values()}),
         **audit,
     }
@@ -83,9 +95,13 @@ def _convert_splits(
     samples = {split: [] for split in metadata}
     missing_images: list[str] = []
     missing_evidence: list[str] = []
+    image_lookups: dict[Path, dict[str, Path]] = {}
 
     for split, papers in metadata.items():
-        image_lookup = _image_lookup(image_roots[split])
+        image_root = image_roots[split].resolve()
+        if image_root not in image_lookups:
+            image_lookups[image_root] = _image_lookup(image_root)
+        image_lookup = image_lookups[image_root]
         for metadata_key, paper in papers.items():
             paper_id = str(paper.get("paper_id") or metadata_key)
             candidates: list[str] = []
@@ -227,6 +243,7 @@ def _download_snapshot(target: Path, force: bool) -> Path:
         snapshot_download(
             HF_DATASET,
             repo_type="dataset",
+            revision=HF_REVISION,
             local_dir=target,
             allow_patterns=[*SPLIT_FILES.values(), *set(IMAGE_ARCHIVES.values())],
             force_download=force,

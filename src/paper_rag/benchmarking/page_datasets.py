@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from paper_rag.benchmarking.base import (
     connected_grouped_split,
     grouped_split,
     safe_name,
+    validate_prepared_samples,
 )
 from paper_rag.benchmarking.download import download_file, valid_image_file
 from paper_rag.domain import EvidenceNode, NodeType
@@ -20,7 +22,11 @@ from paper_rag.io import write_json, write_jsonl
 
 
 logger = logging.getLogger(__name__)
-MMLONG_ROOT = "https://raw.githubusercontent.com/mayubo2333/MMLongBench-Doc/main/data"
+MMLONG_REVISION = "d73f0dc0be7e0a2ff6a403d5fe65fcd96461f384"
+MMLONG_ROOT = (
+    "https://raw.githubusercontent.com/mayubo2333/MMLongBench-Doc/"
+    f"{MMLONG_REVISION}/data"
+)
 
 
 def prepare_mmlongbench_doc(
@@ -43,7 +49,8 @@ def prepare_mmlongbench_doc(
     doc_ids = list(dict.fromkeys(str(row["doc_id"]) for row in answerable))
     if max_documents is not None:
         doc_ids = doc_ids[:max_documents]
-    selected = [row for row in answerable if str(row["doc_id"]) in set(doc_ids)]
+    selected_doc_ids = set(doc_ids)
+    selected = [row for row in answerable if str(row["doc_id"]) in selected_doc_ids]
 
     documents = _find_dir(root, "documents") or root / "documents"
     pages_root = layout.raw / "page_images_1based"
@@ -78,15 +85,20 @@ def prepare_mmlongbench_doc(
         logger.info("MMLongBench-Doc pages: %d/%d", position, len(doc_ids))
 
     samples, invalid = _mmlong_samples(selected, graph)
+    validate_prepared_samples("MMLongBench-Doc", graph, samples)
     _save_splits(layout, samples, group_key="paper_id")
     save_graph(graph, layout.graph)
     report = {
         "dataset": "mmlongbench_doc",
         "schema_version": PROCESSED_SCHEMA_VERSION,
+        "source_revision": MMLONG_REVISION if source is None else None,
+        "official_benchmark": max_documents is None,
         "graph_mode": "official_page_images",
         "evaluation_scope": "official_all_papers" if max_documents is None else "partial_documents",
         "samples": len(samples),
         "nodes": len(graph.nodes),
+        "edges": len(graph.edges),
+        "graph_training_signal": bool(graph.edges),
         "papers": len({node.paper_id for node in graph.nodes.values()}),
         "missing_papers": missing_papers,
         "missing_evidence": invalid,
@@ -103,9 +115,11 @@ def prepare_m3docvqa(
 ) -> dict[str, Any]:
     if source is None:
         raise ValueError(
-            "M3DocVQA has no immutable official archive. Provide --dataset-source "
-            "m3docvqa=<LILaC-compatible snapshot> containing M3DocVQA_dev_labeled.json "
-            "and pdf_pages/dev."
+            "The official M3DocVQA loader uses multimodalqa/MMQA_dev.jsonl, "
+            "dev_doc_ids.json, and splits/pdfs_dev, but it provides supporting-document "
+            "IDs rather than gold page IDs. This page-retrieval adapter requires an "
+            "explicit derived snapshot containing M3DocVQA_dev_labeled.json and "
+            "pdf_pages/dev; it cannot produce an official M3DocVQA result."
         )
     root = Path(source)
     qa_path = _find_file(root, "M3DocVQA_dev_labeled.json")
@@ -141,15 +155,20 @@ def prepare_m3docvqa(
                 "required_modalities": list(dict.fromkeys(modalities)),
             }
         )
+    validate_prepared_samples("M3DocVQA derived page snapshot", graph, samples)
     _save_splits(layout, samples, connected=True)
     save_graph(graph, layout.graph)
     report = {
         "dataset": "m3docvqa",
         "schema_version": PROCESSED_SCHEMA_VERSION,
-        "graph_mode": "official_open_domain_pages",
-        "evaluation_scope": "official_all_papers",
+        "source_revision": None,
+        "official_benchmark": False,
+        "graph_mode": "derived_page_label_graph",
+        "evaluation_scope": "derived_page_labeled_snapshot",
         "samples": len(samples),
         "nodes": len(graph.nodes),
+        "edges": len(graph.edges),
+        "graph_training_signal": bool(graph.edges),
         "papers": len({node.paper_id for node in graph.nodes.values()}),
         "missing_images": invalid_images,
         "missing_evidence": missing,
@@ -163,6 +182,9 @@ def _mmlong_samples(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     samples: list[dict[str, Any]] = []
     invalid: list[str] = []
+    candidates_by_paper: dict[str, list[str]] = defaultdict(list)
+    for node_id, node in graph.nodes.items():
+        candidates_by_paper[node.paper_id].append(node_id)
     for index, row in enumerate(rows):
         doc_id = str(row["doc_id"])
         gold = [
@@ -173,7 +195,6 @@ def _mmlong_samples(
         if unknown:
             invalid.append(f"{doc_id}:{index}:{unknown}")
             continue
-        candidates = [node_id for node_id, node in graph.nodes.items() if node.paper_id == doc_id]
         samples.append(
             {
                 "query_id": f"mmlongbench_doc::{index}",
@@ -182,7 +203,7 @@ def _mmlong_samples(
                 "answer": str(row.get("answer", "")),
                 "answer_type": str(row.get("answer_format", "free_text")),
                 "relevant_node_ids": gold,
-                "candidate_node_ids": candidates,
+                "candidate_node_ids": candidates_by_paper[doc_id],
                 "required_modalities": _modalities(row.get("evidence_sources")),
             }
         )
@@ -232,8 +253,10 @@ def _render_pdf(pdf: Path, output: Path) -> list[Path]:
     try:
         for index, page in enumerate(document):
             target = output / f"page-{index}.png"
-            if not target.exists():
+            if not valid_image_file(target):
                 page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False).save(target)
+            if not valid_image_file(target):
+                raise RuntimeError(f"Failed to render a valid page image: {target}")
             paths.append(target)
     finally:
         document.close()

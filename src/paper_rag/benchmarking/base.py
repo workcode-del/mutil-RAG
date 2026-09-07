@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from paper_rag.io import read_jsonl, write_json, write_jsonl
+
+if TYPE_CHECKING:
+    from paper_rag.evidence_graph import EvidenceGraph
 
 
 PROCESSED_SCHEMA_VERSION = 2
@@ -143,3 +146,41 @@ def safe_name(value: str) -> str:
     digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:12]
     readable = "".join(char if char.isalnum() or char in "-_" else "_" for char in value)
     return f"{readable[-60:]}-{digest}"
+
+
+def validate_prepared_samples(
+    dataset: str,
+    graph: "EvidenceGraph",
+    rows: list[dict[str, Any]],
+) -> None:
+    """Reject empty or internally inconsistent converted benchmark artifacts."""
+    if not graph.nodes:
+        raise RuntimeError(f"{dataset} preparation produced an empty graph")
+    if not rows:
+        raise RuntimeError(f"{dataset} preparation produced no usable samples")
+
+    query_ids: set[str] = set()
+    graph_ids = graph.nodes.keys()
+    for index, row in enumerate(rows):
+        query_id = str(row.get("query_id", "")).strip()
+        if not query_id:
+            raise ValueError(f"{dataset} sample {index} has no query_id")
+        if query_id in query_ids:
+            raise ValueError(f"{dataset} has duplicate query_id: {query_id}")
+        query_ids.add(query_id)
+        if not str(row.get("query", "")).strip():
+            raise ValueError(f"{dataset} sample {query_id} has an empty query")
+
+        gold = {str(value) for value in row.get("relevant_node_ids", ())}
+        if not gold:
+            raise ValueError(f"{dataset} sample {query_id} has no gold evidence")
+        candidates = {str(value) for value in row.get("candidate_node_ids", ())}
+        invalid = gold - graph_ids
+        if candidates:
+            invalid.update(candidates - graph_ids)
+            invalid.update(gold - candidates)
+        if invalid:
+            raise ValueError(
+                f"{dataset} sample {query_id} has invalid evidence IDs: "
+                f"{sorted(invalid)[:10]}"
+            )

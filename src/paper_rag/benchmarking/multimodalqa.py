@@ -13,6 +13,7 @@ from paper_rag.benchmarking.base import (
     BenchmarkLayout,
     connected_grouped_split,
     safe_name,
+    validate_prepared_samples,
 )
 from paper_rag.benchmarking.download import extract_zip, valid_image_file
 from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
@@ -22,6 +23,7 @@ from paper_rag.io import write_json, write_jsonl
 
 logger = logging.getLogger(__name__)
 HF_DATASET = "JoohyungYun/multimodalqa_doc"
+HF_REVISION = "3a1d196494add1e6533d00cc7f566e34c3ae1406"
 PARQUET_FILES = (
     "dev.parquet",
     "text.parquet",
@@ -72,7 +74,7 @@ def prepare_multimodalqa(
         rows = json.loads(qa_path.read_text(encoding="utf-8"))
         graph_mode = "official_component_graph"
     samples, missing_evidence = _samples(rows, evidence_index)
-    _validate_prepared(graph, rows, samples, missing_evidence, graph_mode)
+    _validate_prepared(graph, samples, graph_mode)
     save_graph(graph, layout.graph)
     write_jsonl(layout.samples("all"), samples)
     split = connected_grouped_split(samples, members_key="split_group_ids")
@@ -81,10 +83,16 @@ def prepare_multimodalqa(
     report = {
         "dataset": "multimodalqa",
         "schema_version": PROCESSED_SCHEMA_VERSION,
+        "source_revision": HF_REVISION if source is None else None,
+        "source_dataset": HF_DATASET,
+        "upstream_dataset": "allenai/multimodalqa",
+        "official_benchmark": False,
         "graph_mode": graph_mode,
-        "evaluation_scope": "official_all_papers",
+        "evaluation_scope": "lilac_component_dev_snapshot",
         "samples": len(samples),
         "nodes": len(graph.nodes),
+        "edges": len(graph.edges),
+        "graph_training_signal": bool(graph.edges),
         "papers": len({node.paper_id for node in graph.nodes.values()}),
         "missing_images": missing_images,
         "missing_evidence": missing_evidence,
@@ -367,13 +375,10 @@ def _restore_parquet_images(
 
 def _validate_prepared(
     graph: EvidenceGraph,
-    rows: list[dict[str, Any]],
     samples: list[dict[str, Any]],
-    missing_evidence: list[str],
     graph_mode: str,
 ) -> None:
-    if not graph.nodes:
-        raise RuntimeError("MultimodalQA preparation produced an empty graph")
+    validate_prepared_samples("MultimodalQA", graph, samples)
     if graph_mode == "official_parquet_component_graph":
         present = {node.node_type for node in graph.nodes.values()}
         required = {NodeType.SENTENCE, NodeType.TABLE, NodeType.FIGURE}
@@ -382,12 +387,6 @@ def _validate_prepared(
                 "MultimodalQA Parquet conversion lost required modalities: "
                 f"{sorted(node_type.value for node_type in absent)}"
             )
-    if rows and not samples:
-        examples = ", ".join(missing_evidence[:5]) or "no gold evidence found"
-        raise RuntimeError(
-            "MultimodalQA preparation produced zero usable samples from "
-            f"{len(rows)} questions. First evidence errors: {examples}"
-        )
 
 
 def _image_name(row: dict[str, Any]) -> str:
@@ -597,6 +596,7 @@ def _download_snapshot(target: Path, force: bool) -> Path:
         snapshot_download(
             HF_DATASET,
             repo_type="dataset",
+            revision=HF_REVISION,
             local_dir=target,
             force_download=force,
         )

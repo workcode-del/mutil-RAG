@@ -308,9 +308,12 @@ def train_benchmark_index(
     device: str = "cuda",
     reindex: bool = False,
     model_type: str = "hgt",
+    allow_partial: bool = False,
 ) -> dict[str, Any]:
     logger.info("Benchmark %s training start: dataset=%s", model_type.upper(), layout.name)
     _validate_processed_schema(layout)
+    if not allow_partial:
+        _validate_preparation(layout)
     split_statistics = benchmark_split_statistics(layout)
     _validate_training_split(layout)
     ensure_dense_index(layout, config_path, force=reindex)
@@ -484,6 +487,12 @@ def _validate_preparation(layout: BenchmarkLayout) -> None:
     if report.get("evaluation_scope") == "official_all_papers":
         keys.extend(("download_errors", "parse_errors", "missing_papers"))
     problems = {key: report.get(key) for key in keys if report.get(key)}
+    if report.get("official_benchmark") is False:
+        problems["evaluation_scope"] = report.get("evaluation_scope", "non_official")
+    elif layout.name in {"m3docvqa", "multimodalqa"}:
+        problems["dataset_provenance"] = "legacy_or_unverified_derived_snapshot"
+    if str(report.get("evaluation_scope", "")).startswith("partial"):
+        problems["evaluation_scope"] = report["evaluation_scope"]
     if problems:
         raise RuntimeError(
             f"Incomplete {layout.name} preparation: {problems}. "

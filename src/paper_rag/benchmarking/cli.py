@@ -132,6 +132,11 @@ def _add_train_options(parser: argparse.ArgumentParser, *, optional: bool = Fals
     else:
         parser.add_argument("--config", default="configs/default.yaml")
         parser.add_argument("--reindex", action="store_true")
+        parser.add_argument(
+            "--allow-partial",
+            action="store_true",
+            help="Allow incomplete or non-official data for diagnostic training only",
+        )
     parser.add_argument(
         "--graph-output-root",
         "--hgt-output-root",
@@ -284,6 +289,7 @@ def _train(args: argparse.Namespace) -> dict[str, dict]:
             device=args.device,
             reindex=args.reindex,
             model_type=args.graph_model,
+            allow_partial=getattr(args, "allow_partial", False),
         )
         for dataset in args.datasets
     }

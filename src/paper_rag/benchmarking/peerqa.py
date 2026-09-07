@@ -13,6 +13,7 @@ from paper_rag.benchmarking.base import (
     grouped_split,
     read_jsonl,
     safe_name,
+    validate_prepared_samples,
     write_json,
     write_jsonl,
 )
@@ -26,10 +27,8 @@ from paper_rag.parsing import MinerUAdapter
 logger = logging.getLogger(__name__)
 
 
-PEERQA_DATA = (
-    "https://huggingface.co/datasets/UKPLab/PeerQA/resolve/"
-    "f872154fec9e56f525affa4cbafdc5143e1c3f00"
-)
+PEERQA_REVISION = "f872154fec9e56f525affa4cbafdc5143e1c3f00"
+PEERQA_DATA = f"https://huggingface.co/datasets/UKPLab/PeerQA/resolve/{PEERQA_REVISION}"
 
 
 def prepare_peerqa(
@@ -86,8 +85,9 @@ def prepare_peerqa(
         )
         graph.extend(parsed.nodes.values(), parsed.edges)
 
-    save_graph(graph, layout.graph)
     samples, conversion = _convert_questions(graph, qa_rows)
+    validate_prepared_samples("PeerQA", graph, samples)
+    save_graph(graph, layout.graph)
     write_jsonl(layout.samples("all"), samples)
     for split, rows in grouped_split(samples, group_key="paper_id").items():
         write_jsonl(layout.samples(split), rows)
@@ -98,6 +98,8 @@ def prepare_peerqa(
     report = {
         "dataset": "peerqa",
         "schema_version": PROCESSED_SCHEMA_VERSION,
+        "source_revision": PEERQA_REVISION,
+        "official_benchmark": True,
         "graph_mode": (
             "official_sentences_plus_mineru_openreview"
             if pdf_manifest
@@ -106,6 +108,8 @@ def prepare_peerqa(
         "questions": len(qa_rows),
         "evaluation_samples": len(samples),
         "nodes": len(graph.nodes),
+        "edges": len(graph.edges),
+        "graph_training_signal": bool(graph.edges),
         "papers": len({node.paper_id for node in graph.nodes.values()}),
         "evaluation_scope": (
             "official_all_papers" if complete else "official_redistributable_papers"

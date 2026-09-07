@@ -9,10 +9,11 @@ from paper_rag.benchmarking.base import (
     BenchmarkLayout,
     grouped_split,
     read_jsonl,
+    validate_prepared_samples,
     write_json,
     write_jsonl,
 )
-from paper_rag.benchmarking.download import download_file, extract_zip
+from paper_rag.benchmarking.download import download_file, extract_zip, valid_image_file
 from paper_rag.domain import EvidenceNode, NodeType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
 
@@ -20,7 +21,8 @@ from paper_rag.evidence_graph import EvidenceGraph, save_graph
 logger = logging.getLogger(__name__)
 
 
-HF_ROOT = "https://huggingface.co/datasets/MMDocIR/MMDocRAG/resolve/main"
+HF_REVISION = "04b58dbc5c6c4955291124eed411b09114728061"
+HF_ROOT = f"https://huggingface.co/datasets/MMDocIR/MMDocRAG/resolve/{HF_REVISION}"
 
 
 def prepare_mmdocrag(
@@ -49,9 +51,11 @@ def prepare_mmdocrag(
         + [("test", row) for row in evaluation],
         image_lookup,
     )
-    save_graph(graph, layout.graph)
     development_samples = [_sample(row, "development") for row in development]
     test_samples = [_sample(row, "test") for row in evaluation]
+    validate_prepared_samples("MMDocRAG development", graph, development_samples)
+    validate_prepared_samples("MMDocRAG test", graph, test_samples)
+    save_graph(graph, layout.graph)
     write_jsonl(layout.samples("development"), development_samples)
     write_jsonl(layout.samples("test"), test_samples)
     split = grouped_split(
@@ -65,11 +69,15 @@ def prepare_mmdocrag(
     report = {
         "dataset": "mmdocrag",
         "schema_version": PROCESSED_SCHEMA_VERSION,
+        "source_revision": HF_REVISION,
+        "official_benchmark": True,
         "graph_mode": "official_quote_candidates",
         "setting": setting,
         "development_samples": len(development_samples),
         "test_samples": len(test_samples),
         "nodes": len(graph.nodes),
+        "edges": len(graph.edges),
+        "graph_training_signal": bool(graph.edges),
         "papers": len({node.paper_id for node in graph.nodes.values()}),
         "missing_images": sorted(missing_images),
         "official_candidate_scope": True,
@@ -164,7 +172,11 @@ def _quote_node_id(split: str, row: dict[str, Any], quote: dict[str, Any]) -> st
 def _file_lookup(root: Path, suffixes: set[str]) -> dict[str, Path]:
     result: dict[str, Path] = {}
     for path in root.rglob("*"):
-        if path.is_file() and path.suffix.lower() in suffixes:
+        if (
+            path.is_file()
+            and path.suffix.lower() in suffixes
+            and valid_image_file(path)
+        ):
             result[path.name] = path.resolve()
             result[path.relative_to(root).as_posix()] = path.resolve()
     return result

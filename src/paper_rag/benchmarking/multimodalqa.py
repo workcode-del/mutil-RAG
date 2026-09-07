@@ -72,6 +72,7 @@ def prepare_multimodalqa(
         rows = json.loads(qa_path.read_text(encoding="utf-8"))
         graph_mode = "official_component_graph"
     samples, missing_evidence = _samples(rows, evidence_index)
+    _validate_prepared(graph, rows, samples, missing_evidence, graph_mode)
     save_graph(graph, layout.graph)
     write_jsonl(layout.samples("all"), samples)
     split = connected_grouped_split(samples, members_key="split_group_ids")
@@ -145,17 +146,17 @@ def _parquet_component_graph(
         ("image.parquet", "image", NodeType.FIGURE),
     ):
         for row in _iter_parquet_rows(_required_path(paths, filename)):
-            for title, component_id, component in _parquet_components(row, kind):
-                _add_component(
-                    graph,
-                    index,
-                    missing_images,
-                    title=title,
-                    component_id=component_id,
-                    node_type=node_type,
-                    component=component,
-                    image_lookup=image_lookup,
-                )
+            title, component_id, component = _official_parquet_component(row, kind)
+            _add_component(
+                graph,
+                index,
+                missing_images,
+                title=title,
+                component_id=component_id,
+                node_type=node_type,
+                component=component,
+                image_lookup=image_lookup,
+            )
     return graph, index, missing_images
 
 
@@ -171,6 +172,11 @@ def _add_component(
     image_lookup: dict[str, Path],
 ) -> None:
     node_id = f"multimodalqa::{safe_name(title)}::{component_id}"
+    attributes = {
+        key: component[key]
+        for key in ("heading_path", "hyperlinks", "label_id")
+        if key in component
+    }
     if node_type is NodeType.FIGURE:
         filename = str(component.get("image_name") or component.get("filename") or "")
         image = image_lookup.get(filename) or image_lookup.get(Path(filename).name)
@@ -183,7 +189,7 @@ def _add_component(
             node_type,
             image_path=str(image),
             provenance={"dataset": "MultimodalQA", "component_id": component_id},
-            attributes={"text_view": _caption_text(component)},
+            attributes={**attributes, "text_view": _caption_text(component)},
         )
     else:
         text = (
@@ -206,6 +212,7 @@ def _add_component(
             text=text,
             image_path=str(table_image) if table_image else None,
             provenance={"dataset": "MultimodalQA", "component_id": component_id},
+            attributes=attributes,
         )
     graph.add_node(node)
     index[(title, component_id)] = node_id
@@ -231,50 +238,78 @@ def _add_component(
     )
 
 
-def _parquet_components(
+def _official_parquet_component(
     row: dict[str, Any], kind: str
-) -> list[tuple[str, str, dict[str, Any]]]:
-    decoded = {key: _decode_nested(value) for key, value in row.items()}
-    title = str(
-        decoded.get("doc_title")
-        or decoded.get("title")
-        or decoded.get("webpage_title")
-        or ""
-    )
-    component_id = str(
-        decoded.get("component_id")
-        or decoded.get("id")
-        or decoded.get("componentId")
-        or ""
-    )
-    if title and component_id:
-        component = dict(decoded)
-        for key in ("component", "content", "value", "metadata"):
-            nested = decoded.get(key)
-            if isinstance(nested, dict):
-                component.update(nested)
-        return [(title, component_id, component)]
+) -> tuple[str, str, dict[str, Any]]:
+    """Decode one row exactly as the dataset's official load.py does."""
+    required = {
+        "doc_title",
+        "component_id",
+        "heading_path",
+        "hyperlinks",
+        "component",
+        "label_id",
+    }
+    missing = required - row.keys()
+    if missing:
+        raise RuntimeError(
+            f"Unsupported MultimodalQA {kind}.parquet schema; "
+            f"missing={sorted(missing)}, columns={sorted(row)}"
+        )
+    title = str(row["doc_title"] or "")
+    component_id = str(row["component_id"] or "")
+    if not title or not component_id:
+        raise RuntimeError(
+            f"Invalid MultimodalQA {kind}.parquet row: "
+            "doc_title and component_id must be non-empty"
+        )
 
-    container = decoded.get(kind) or decoded.get(f"{kind}_component")
-    if isinstance(container, list) and all(
-        isinstance(item, (list, tuple)) and len(item) == 2 for item in container
-    ):
-        container = dict(container)
-    if title and isinstance(container, dict):
-        return [
-            (title, str(key), _component_mapping(value, kind))
-            for key, value in container.items()
-        ]
-    raise RuntimeError(
-        f"Unsupported MultimodalQA {kind}.parquet schema; columns={sorted(row)}"
+    if kind == "text":
+        component: dict[str, Any] = {"text": str(row["component"] or "")}
+    else:
+        payload = _official_json(row["component"], "component", title, component_id)
+        if kind == "table" and isinstance(payload, list):
+            component = {"table": payload}
+        elif kind == "image" and isinstance(payload, dict):
+            component = dict(payload)
+        else:
+            raise RuntimeError(
+                f"Invalid MultimodalQA {kind}.parquet component for "
+                f"{title}:{component_id}; decoded type={type(payload).__name__}"
+            )
+    heading_path = _official_json(
+        row["heading_path"], "heading_path", title, component_id
     )
+    hyperlinks = _official_json(
+        row["hyperlinks"], "hyperlinks", title, component_id
+    )
+    if not isinstance(heading_path, list) or not isinstance(hyperlinks, list):
+        raise RuntimeError(
+            f"Invalid MultimodalQA metadata for {title}:{component_id}; "
+            "heading_path and hyperlinks must decode to lists"
+        )
+    component.update(
+        {
+            "heading_path": heading_path,
+            "hyperlinks": hyperlinks,
+            "label_id": row["label_id"],
+        }
+    )
+    return title, component_id, component
 
 
-def _component_mapping(value: Any, kind: str) -> dict[str, Any]:
-    value = _decode_nested(value)
-    if isinstance(value, dict):
-        return value
-    return {"text" if kind == "text" else kind: value}
+def _official_json(value: Any, field: str, title: str, component_id: str) -> Any:
+    if not isinstance(value, str):
+        raise RuntimeError(
+            f"Invalid MultimodalQA {field} for {title}:{component_id}; "
+            f"expected JSON string, got {type(value).__name__}"
+        )
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Invalid MultimodalQA {field} JSON for {title}:{component_id}"
+        ) from exc
 
 
 def _decode_nested(value: Any) -> Any:
@@ -296,6 +331,12 @@ def _restore_parquet_images(
     lookup: dict[str, Path] = {}
     invalid_rows = 0
     for row in _iter_parquet_rows(path):
+        missing = {"image_name", "byte_data"} - row.keys()
+        if missing:
+            raise RuntimeError(
+                "Unsupported MultimodalQA image_dump.parquet schema; "
+                f"missing={sorted(missing)}, columns={sorted(row)}"
+            )
         name = _image_name(row)
         payload = _image_payload(row)
         if not name or payload is None:
@@ -316,40 +357,57 @@ def _restore_parquet_images(
         logger.warning(
             "Skipped %d invalid MultimodalQA image_dump rows", invalid_rows
         )
+    if not lookup:
+        raise RuntimeError(
+            "MultimodalQA image_dump.parquet produced no valid images; expected "
+            "official columns image_name and byte_data"
+        )
     return lookup
 
 
+def _validate_prepared(
+    graph: EvidenceGraph,
+    rows: list[dict[str, Any]],
+    samples: list[dict[str, Any]],
+    missing_evidence: list[str],
+    graph_mode: str,
+) -> None:
+    if not graph.nodes:
+        raise RuntimeError("MultimodalQA preparation produced an empty graph")
+    if graph_mode == "official_parquet_component_graph":
+        present = {node.node_type for node in graph.nodes.values()}
+        required = {NodeType.SENTENCE, NodeType.TABLE, NodeType.FIGURE}
+        if absent := required - present:
+            raise RuntimeError(
+                "MultimodalQA Parquet conversion lost required modalities: "
+                f"{sorted(node_type.value for node_type in absent)}"
+            )
+    if rows and not samples:
+        examples = ", ".join(missing_evidence[:5]) or "no gold evidence found"
+        raise RuntimeError(
+            "MultimodalQA preparation produced zero usable samples from "
+            f"{len(rows)} questions. First evidence errors: {examples}"
+        )
+
+
 def _image_name(row: dict[str, Any]) -> str:
-    for key in ("image_name", "filename", "name", "path"):
-        value = row.get(key)
-        if isinstance(value, str) and value:
-            return value
-    image = row.get("image")
-    if isinstance(image, dict):
-        for key in ("path", "image_name", "filename"):
-            value = image.get(key)
-            if isinstance(value, str) and value:
-                return value
-    return ""
+    value = row.get("image_name")
+    return value if isinstance(value, str) else ""
 
 
 def _image_payload(row: dict[str, Any]) -> bytes | None:
-    for key in ("image_bytes", "bytes", "data", "image"):
-        payload = row.get(key)
-        if isinstance(payload, dict):
-            payload = payload.get("bytes") or payload.get("data")
-        if isinstance(payload, (bytes, bytearray, memoryview)):
-            return bytes(payload)
-        if isinstance(payload, list) and all(
-            isinstance(value, int) and 0 <= value <= 255 for value in payload
-        ):
-            return bytes(payload)
-    return None
+    payload = row.get("byte_data")
+    return (
+        bytes(payload)
+        if isinstance(payload, (bytes, bytearray, memoryview))
+        else None
+    )
 
 
 def _restored_image_name(name: str, payload: bytes) -> str:
     suffix = Path(name).suffix.casefold()
-    if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+    known = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+    if suffix not in known:
         suffix = _image_suffix(payload)
     return f"{safe_name(name)}{suffix}"
 
@@ -379,7 +437,8 @@ def _iter_parquet_rows(path: Path):
             "Install the unified project dependencies."
         ) from exc
     source = parquet.ParquetFile(path)
-    for batch in source.iter_batches(batch_size=2048):
+    batch_size = 32 if path.name == "image_dump.parquet" else 2048
+    for batch in source.iter_batches(batch_size=batch_size):
         yield from batch.to_pylist()
 
 

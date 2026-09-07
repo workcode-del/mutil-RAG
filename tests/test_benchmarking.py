@@ -32,7 +32,7 @@ from paper_rag.benchmarking.runner import (
 )
 from paper_rag.benchmarking.spiqa import _convert_splits
 from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
-from paper_rag.evidence_graph import EvidenceGraph, save_graph
+from paper_rag.evidence_graph import EvidenceGraph, load_graph, save_graph
 from paper_rag.io import read_jsonl
 from paper_rag.io import write_jsonl
 from paper_rag.training import count_relation_triples
@@ -420,29 +420,37 @@ def test_multimodalqa_prepare_reads_current_parquet_snapshot(
         "text.parquet": [
             {
                 "doc_title": "Paper_A",
-                "text": {"po_1": {"text": "Text evidence"}},
+                "component_id": "po_1",
+                "heading_path": "[]",
+                "hyperlinks": "[]",
+                "component": "Text evidence",
+                "label_id": "No Label Match Exists",
             }
         ],
         "table.parquet": [
             {
                 "doc_title": "Paper_A",
                 "component_id": "t_1",
-                "table": '[[{"text": "Model"}], [{"text": "Ours"}]]',
+                "heading_path": '["Results"]',
+                "hyperlinks": "[]",
+                "component": '[[{"text": "Model"}], [{"text": "Ours"}]]',
+                "label_id": "q1",
             }
         ],
         "image.parquet": [
             {
                 "doc_title": "Paper_A",
-                "image": {
-                    "i_1": {
-                        "image_name": "nested/figure.png",
-                        "caption": "A figure",
-                    }
-                },
+                "component_id": "i_1",
+                "heading_path": '["Results"]',
+                "hyperlinks": "[]",
+                "component": (
+                    '{"image_name": "figure", "caption": "A figure"}'
+                ),
+                "label_id": "q1",
             }
         ],
         "image_dump.parquet": [
-            {"image_name": "nested/figure.png", "image_bytes": png}
+            {"image_name": "figure", "byte_data": png}
         ],
         "dev.parquet": [
             {
@@ -468,6 +476,15 @@ def test_multimodalqa_prepare_reads_current_parquet_snapshot(
     assert report["missing_images"] == []
     assert any((layout.processed / "images").iterdir())
     assert samples[0]["required_modalities"] == ["table", "image"]
+    graph = load_graph(layout.graph)
+    text = next(
+        node for node in graph.nodes.values() if node.node_type is NodeType.SENTENCE
+    )
+    table = next(
+        node for node in graph.nodes.values() if node.node_type is NodeType.TABLE
+    )
+    assert text.text == "Text evidence"
+    assert table.attributes["heading_path"] == ["Results"]
 
 
 def test_mmlongbench_uses_gold_evidence_pages() -> None:

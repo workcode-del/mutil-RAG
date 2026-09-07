@@ -68,7 +68,7 @@ paper-rag benchmark prepare --datasets mmlongbench_doc --root data/benchmarks
 
 `--max-documents 5` 只用于冒烟测试，报告会标记为 `partial_documents`。已有官方快照可通过 `--dataset-source "mmlongbench_doc=/data/MMLongBench-Doc"` 使用。
 
-MultimodalQA 默认下载 `JoohyungYun/multimodalqa_doc`。当前 Hugging Face 快照中的 `dev.parquet`、`text.parquet`、`table.parquet`、`image.parquet` 和 `image_dump.parquet` 可直接读取，图片二进制会恢复到 processed 目录；无需手工运行仓库附带的 `load.py`。适配器也继续兼容旧版 `QAs_dev_labeled.json`、`parsed_documents`、`image_components` 目录或 ZIP。text、table、image 分别建成 Sentence、Table、Figure：
+MultimodalQA 默认下载 `JoohyungYun/multimodalqa_doc`。当前 Hugging Face 快照中的 `dev.parquet`、`text.parquet`、`table.parquet`、`image.parquet` 和 `image_dump.parquet` 可直接读取，无需手工运行仓库附带的 `load.py`。Parquet 还原严格沿用官方脚本的字段约定：三类组件读取 `doc_title`、`component_id` 和 `component`，图片字节读取 `image_name` 与 `byte_data`；`heading_path`、`hyperlinks` 和 `label_id` 会保留到图节点属性。约 5 GB 的图片 Parquet 按小批流式恢复，不会像官方 pandas 脚本一样整表载入内存。空图、零可用样本或任一模态完全丢失都会直接报错，不再写出看似成功的空数据。适配器也继续兼容旧版 `QAs_dev_labeled.json`、`parsed_documents`、`image_components` 目录或 ZIP。text、table、image 分别建成 Sentence、Table、Figure：
 
 ```bash
 paper-rag benchmark prepare --datasets multimodalqa --root data/benchmarks

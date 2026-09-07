@@ -4,6 +4,7 @@ import json
 import logging
 from collections import defaultdict
 from pathlib import Path
+from zipfile import ZipFile
 from typing import Any
 
 from paper_rag.benchmarking.base import (
@@ -12,7 +13,7 @@ from paper_rag.benchmarking.base import (
     connected_grouped_split,
     safe_name,
 )
-from paper_rag.benchmarking.download import valid_image_file
+from paper_rag.benchmarking.download import extract_zip, valid_image_file
 from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
 from paper_rag.io import write_json, write_jsonl
@@ -30,12 +31,16 @@ def prepare_multimodalqa(
 ) -> dict[str, Any]:
     root = Path(source) if source else _download_snapshot(layout.raw, force)
     qa_path = _find_file(root, "QAs_dev_labeled.json")
-    documents = _find_dir(root, "parsed_documents")
-    images = _find_dir(root, "image_components")
+    documents = _resolve_component_dir(root, "parsed_documents", force=force)
+    images = _resolve_component_dir(root, "image_components", force=force)
     if qa_path is None or documents is None or images is None:
+        available = sorted(
+            path.name for path in root.iterdir() if path.name != ".cache"
+        )
         raise FileNotFoundError(
             "MultimodalQA source must contain QAs_dev_labeled.json, parsed_documents, "
-            "and image_components"
+            "and image_components (directories or matching ZIP archives). "
+            f"Found at {root}: {available}"
         )
     documents = documents / "dev" if (documents / "dev").is_dir() else documents
     images = images / "dev" if (images / "dev").is_dir() else images
@@ -265,3 +270,46 @@ def _find_dir(root: Path, name: str) -> Path | None:
     if direct.is_dir():
         return direct
     return next((path for path in root.rglob(name) if path.is_dir()), None)
+
+
+def _resolve_component_dir(root: Path, name: str, *, force: bool) -> Path | None:
+    existing = _find_dir(root, name)
+    if existing is not None:
+        return existing
+    archive = _find_component_archive(root, name)
+    if archive is None:
+        return None
+    destination = root if _archive_contains_dir(archive, name) else root / name
+    logger.info("Extracting MultimodalQA component: %s", archive)
+    extract_zip(archive, destination, force=force)
+    return _find_dir(root, name)
+
+
+def _find_component_archive(root: Path, name: str) -> Path | None:
+    expected = _normalized_name(name)
+    archives = sorted(root.rglob("*.zip"))
+    named = next(
+        (
+            path
+            for path in archives
+            if expected in _normalized_name(path.stem)
+        ),
+        None,
+    )
+    return named or next(
+        (path for path in archives if _archive_contains_dir(path, name)),
+        None,
+    )
+
+
+def _archive_contains_dir(archive: Path, name: str) -> bool:
+    expected = name.casefold()
+    with ZipFile(archive) as bundle:
+        return any(
+            expected in {part.casefold() for part in Path(member.filename).parts}
+            for member in bundle.infolist()
+        )
+
+
+def _normalized_name(value: str) -> str:
+    return "".join(character for character in value.casefold() if character.isalnum())

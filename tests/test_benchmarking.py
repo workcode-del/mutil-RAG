@@ -13,7 +13,11 @@ from paper_rag.benchmarking.base import (
 from paper_rag.benchmarking.cli import _ranking_cutoffs, _report_summaries
 from paper_rag.benchmarking.download import _valid_download, extract_zip
 from paper_rag.benchmarking.mmdocrag import _build_quote_graph, _sample, _string_list
-from paper_rag.benchmarking.multimodalqa import _component_graph, _samples
+from paper_rag.benchmarking.multimodalqa import (
+    _component_graph,
+    _samples,
+    prepare_multimodalqa,
+)
 from paper_rag.benchmarking.page_datasets import _mmlong_samples, _page_node_id
 from paper_rag.benchmarking.peerqa import _build_official_graph
 from paper_rag.benchmarking.runner import (
@@ -352,6 +356,54 @@ def test_multimodalqa_imports_text_table_image_components(tmp_path) -> None:
     assert next(
         node for node in graph.nodes.values() if node.node_type is NodeType.TABLE
     ).image_path.endswith("figure.png")
+
+
+def test_multimodalqa_prepare_extracts_downloaded_component_archives(tmp_path) -> None:
+    source = tmp_path / "snapshot"
+    source.mkdir()
+    rows = [
+        {
+            "qid": "q1",
+            "question": "What is shown?",
+            "answers": [{"answer": "A figure"}],
+            "evidences": [
+                {
+                    "mmqa_doc_modality": "image",
+                    "gold_webpage_title": "Paper A",
+                    "gold_component_id": "image_1",
+                }
+            ],
+        }
+    ]
+    (source / "QAs_dev_labeled.json").write_text(
+        __import__("json").dumps(rows), encoding="utf-8"
+    )
+    with zipfile.ZipFile(source / "parsed_documents.zip", "w") as archive:
+        archive.writestr(
+            "dev/doc.json",
+            __import__("json").dumps(
+                {
+                    "title": "Paper A",
+                    "image": {
+                        "image_1": {
+                            "filename": "figure.png",
+                            "caption": {"text": "A figure"},
+                        }
+                    },
+                }
+            ),
+        )
+    with zipfile.ZipFile(source / "image_components.zip", "w") as archive:
+        archive.writestr("dev/figure.png", b"\x89PNG\r\n\x1a\nvalid-test-stub")
+
+    report = prepare_multimodalqa(
+        BenchmarkLayout.create("multimodalqa", tmp_path / "benchmarks"),
+        source=source,
+    )
+
+    assert report["samples"] == 1
+    assert (source / "parsed_documents" / "dev" / "doc.json").is_file()
+    assert (source / "image_components" / "dev" / "figure.png").is_file()
 
 
 def test_mmlongbench_uses_gold_evidence_pages() -> None:

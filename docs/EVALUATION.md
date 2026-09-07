@@ -68,7 +68,7 @@ paper-rag benchmark prepare --datasets mmlongbench_doc --root data/benchmarks
 
 `--max-documents 5` 只用于冒烟测试，报告会标记为 `partial_documents`。已有官方快照可通过 `--dataset-source "mmlongbench_doc=/data/MMLongBench-Doc"` 使用。
 
-MultimodalQA 默认下载 `JoohyungYun/multimodalqa_doc`，读取 `QAs_dev_labeled.json`、`parsed_documents/dev` 和 `image_components/dev`。text、table、image 分别建成 Sentence、Table、Figure：
+MultimodalQA 默认下载 `JoohyungYun/multimodalqa_doc`，自动解压其中的 `parsed_documents` 和 `image_components` ZIP，读取 `QAs_dev_labeled.json`、`parsed_documents/dev` 和 `image_components/dev`。已下载的快照和解压标记会复用；text、table、image 分别建成 Sentence、Table、Figure：
 
 ```bash
 paper-rag benchmark prepare --datasets multimodalqa --root data/benchmarks

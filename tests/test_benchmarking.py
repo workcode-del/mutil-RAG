@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import paper_rag.benchmarking.multimodalqa as multimodalqa
 from paper_rag.benchmarking.base import (
     PROCESSED_SCHEMA_VERSION,
     BenchmarkLayout,
@@ -32,6 +33,7 @@ from paper_rag.benchmarking.runner import (
 from paper_rag.benchmarking.spiqa import _convert_splits
 from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
+from paper_rag.io import read_jsonl
 from paper_rag.io import write_jsonl
 from paper_rag.training import count_relation_triples
 
@@ -404,6 +406,68 @@ def test_multimodalqa_prepare_extracts_downloaded_component_archives(tmp_path) -
     assert report["samples"] == 1
     assert (source / "parsed_documents" / "dev" / "doc.json").is_file()
     assert (source / "image_components" / "dev" / "figure.png").is_file()
+
+
+def test_multimodalqa_prepare_reads_current_parquet_snapshot(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "snapshot"
+    source.mkdir()
+    for name in multimodalqa.PARQUET_FILES:
+        (source / name).touch()
+    png = b"\x89PNG\r\n\x1a\nvalid-test-stub"
+    parquet_rows = {
+        "text.parquet": [
+            {
+                "doc_title": "Paper_A",
+                "text": {"po_1": {"text": "Text evidence"}},
+            }
+        ],
+        "table.parquet": [
+            {
+                "doc_title": "Paper_A",
+                "component_id": "t_1",
+                "table": '[[{"text": "Model"}], [{"text": "Ours"}]]',
+            }
+        ],
+        "image.parquet": [
+            {
+                "doc_title": "Paper_A",
+                "image": {
+                    "i_1": {
+                        "image_name": "nested/figure.png",
+                        "caption": "A figure",
+                    }
+                },
+            }
+        ],
+        "image_dump.parquet": [
+            {"image_name": "nested/figure.png", "image_bytes": png}
+        ],
+        "dev.parquet": [
+            {
+                "qid": "q1",
+                "question": "Compare the evidence",
+                "answer": "Ours",
+                "evidence": [["Paper_A", "t_1"], ["Paper_A", "i_1"]],
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        multimodalqa,
+        "_iter_parquet_rows",
+        lambda path: iter(parquet_rows[path.name]),
+    )
+
+    layout = BenchmarkLayout.create("multimodalqa", tmp_path / "benchmarks")
+    report = prepare_multimodalqa(layout, source=source)
+    samples = read_jsonl(layout.samples("all"))
+
+    assert report["graph_mode"] == "official_parquet_component_graph"
+    assert report["samples"] == 1
+    assert report["missing_images"] == []
+    assert any((layout.processed / "images").iterdir())
+    assert samples[0]["required_modalities"] == ["table", "image"]
 
 
 def test_mmlongbench_uses_gold_evidence_pages() -> None:

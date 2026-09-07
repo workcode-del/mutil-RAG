@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
-from zipfile import ZipFile
 from typing import Any
+from zipfile import ZipFile
 
 from paper_rag.benchmarking.base import (
     PROCESSED_SCHEMA_VERSION,
@@ -21,6 +22,13 @@ from paper_rag.io import write_json, write_jsonl
 
 logger = logging.getLogger(__name__)
 HF_DATASET = "JoohyungYun/multimodalqa_doc"
+PARQUET_FILES = (
+    "dev.parquet",
+    "text.parquet",
+    "table.parquet",
+    "image.parquet",
+    "image_dump.parquet",
+)
 
 
 def prepare_multimodalqa(
@@ -30,22 +38,39 @@ def prepare_multimodalqa(
     force: bool = False,
 ) -> dict[str, Any]:
     root = Path(source) if source else _download_snapshot(layout.raw, force)
-    qa_path = _find_file(root, "QAs_dev_labeled.json")
-    documents = _resolve_component_dir(root, "parsed_documents", force=force)
-    images = _resolve_component_dir(root, "image_components", force=force)
-    if qa_path is None or documents is None or images is None:
-        available = sorted(
-            path.name for path in root.iterdir() if path.name != ".cache"
+    parquet = {name: _find_file(root, name) for name in PARQUET_FILES}
+    present_parquet = {name for name, path in parquet.items() if path is not None}
+    if len(present_parquet) == len(PARQUET_FILES):
+        graph, evidence_index, missing_images = _parquet_component_graph(
+            parquet,
+            layout.processed / "images",
+            force=force,
         )
-        raise FileNotFoundError(
-            "MultimodalQA source must contain QAs_dev_labeled.json, parsed_documents, "
-            "and image_components (directories or matching ZIP archives). "
-            f"Found at {root}: {available}"
-        )
-    documents = documents / "dev" if (documents / "dev").is_dir() else documents
-    images = images / "dev" if (images / "dev").is_dir() else images
-    graph, evidence_index, missing_images = _component_graph(documents, images)
-    rows = json.loads(qa_path.read_text(encoding="utf-8"))
+        rows = list(_iter_parquet_rows(_required_path(parquet, "dev.parquet")))
+        graph_mode = "official_parquet_component_graph"
+    else:
+        qa_path = _find_file(root, "QAs_dev_labeled.json")
+        documents = _resolve_component_dir(root, "parsed_documents", force=force)
+        images = _resolve_component_dir(root, "image_components", force=force)
+        if qa_path is None or documents is None or images is None:
+            available = sorted(
+                path.name for path in root.iterdir() if path.name != ".cache"
+            )
+            parquet_hint = ""
+            if present_parquet:
+                missing = sorted(set(PARQUET_FILES) - present_parquet)
+                parquet_hint = f" Incomplete Parquet snapshot; missing: {missing}."
+            raise FileNotFoundError(
+                "MultimodalQA source must contain either the five Parquet files "
+                f"{list(PARQUET_FILES)}, or QAs_dev_labeled.json plus parsed_documents "
+                "and image_components (directories or matching ZIP archives)."
+                f"{parquet_hint} Found at {root}: {available}"
+            )
+        documents = documents / "dev" if (documents / "dev").is_dir() else documents
+        images = images / "dev" if (images / "dev").is_dir() else images
+        graph, evidence_index, missing_images = _component_graph(documents, images)
+        rows = json.loads(qa_path.read_text(encoding="utf-8"))
+        graph_mode = "official_component_graph"
     samples, missing_evidence = _samples(rows, evidence_index)
     save_graph(graph, layout.graph)
     write_jsonl(layout.samples("all"), samples)
@@ -55,7 +80,7 @@ def prepare_multimodalqa(
     report = {
         "dataset": "multimodalqa",
         "schema_version": PROCESSED_SCHEMA_VERSION,
-        "graph_mode": "official_component_graph",
+        "graph_mode": graph_mode,
         "evaluation_scope": "official_all_papers",
         "samples": len(samples),
         "nodes": len(graph.nodes),
@@ -89,65 +114,280 @@ def _component_graph(
             ("image", NodeType.FIGURE),
         ):
             for component_id, component in raw.get(kind, {}).items():
-                node_id = f"multimodalqa::{safe_name(title)}::{component_id}"
-                if node_type is NodeType.FIGURE:
-                    filename = str(component.get("filename") or "")
-                    image = image_lookup.get(filename) or image_lookup.get(Path(filename).name)
-                    if image is None:
-                        missing_images.append(f"{title}:{component_id}:{filename}")
-                        continue
-                    node = EvidenceNode(
-                        node_id,
-                        paper_id,
-                        node_type,
-                        image_path=str(image),
-                        provenance={"dataset": "MultimodalQA", "component_id": component_id},
-                        attributes={"text_view": _caption_text(component)},
-                    )
-                else:
-                    text = (
-                        str(component.get("text", ""))
-                        if node_type is NodeType.SENTENCE
-                        else _table_text(component)
-                    )
-                    if not text:
-                        continue
-                    table_image = None
-                    if node_type is NodeType.TABLE:
-                        table_image, absent = _table_image(component, image_lookup)
-                        missing_images.extend(
-                            f"{title}:{component_id}:{filename}" for filename in absent
-                        )
-                    node = EvidenceNode(
-                        node_id,
-                        paper_id,
-                        node_type,
-                        text=text,
-                        image_path=str(table_image) if table_image else None,
-                        provenance={"dataset": "MultimodalQA", "component_id": component_id},
-                    )
-                graph.add_node(node)
-                index[(title, str(component_id))] = node_id
-                if node_type is NodeType.FIGURE and (caption := _caption_text(component)):
-                    caption_id = f"{node_id}:caption"
-                    graph.add_node(
-                        EvidenceNode(
-                            caption_id,
-                            paper_id,
-                            NodeType.CAPTION,
-                            text=caption,
-                            provenance={"dataset": "MultimodalQA", "derived": "caption"},
-                        )
-                    )
-                    graph.add_edge(
-                        EvidenceEdge(
-                            caption_id,
-                            node_id,
-                            RelationType.CAPTION_OF,
-                            mandatory_for_closure=True,
-                        )
-                    )
+                _add_component(
+                    graph,
+                    index,
+                    missing_images,
+                    title=paper_id,
+                    component_id=str(component_id),
+                    node_type=node_type,
+                    component=component,
+                    image_lookup=image_lookup,
+                )
     return graph, index, missing_images
+
+
+def _parquet_component_graph(
+    paths: dict[str, Path | None],
+    image_root: Path,
+    *,
+    force: bool,
+) -> tuple[EvidenceGraph, dict[tuple[str, str], str], list[str]]:
+    image_lookup = _restore_parquet_images(
+        _required_path(paths, "image_dump.parquet"), image_root, force=force
+    )
+    graph = EvidenceGraph()
+    index: dict[tuple[str, str], str] = {}
+    missing_images: list[str] = []
+    for filename, kind, node_type in (
+        ("text.parquet", "text", NodeType.SENTENCE),
+        ("table.parquet", "table", NodeType.TABLE),
+        ("image.parquet", "image", NodeType.FIGURE),
+    ):
+        for row in _iter_parquet_rows(_required_path(paths, filename)):
+            for title, component_id, component in _parquet_components(row, kind):
+                _add_component(
+                    graph,
+                    index,
+                    missing_images,
+                    title=title,
+                    component_id=component_id,
+                    node_type=node_type,
+                    component=component,
+                    image_lookup=image_lookup,
+                )
+    return graph, index, missing_images
+
+
+def _add_component(
+    graph: EvidenceGraph,
+    index: dict[tuple[str, str], str],
+    missing_images: list[str],
+    *,
+    title: str,
+    component_id: str,
+    node_type: NodeType,
+    component: dict[str, Any],
+    image_lookup: dict[str, Path],
+) -> None:
+    node_id = f"multimodalqa::{safe_name(title)}::{component_id}"
+    if node_type is NodeType.FIGURE:
+        filename = str(component.get("image_name") or component.get("filename") or "")
+        image = image_lookup.get(filename) or image_lookup.get(Path(filename).name)
+        if image is None:
+            missing_images.append(f"{title}:{component_id}:{filename}")
+            return
+        node = EvidenceNode(
+            node_id,
+            title,
+            node_type,
+            image_path=str(image),
+            provenance={"dataset": "MultimodalQA", "component_id": component_id},
+            attributes={"text_view": _caption_text(component)},
+        )
+    else:
+        text = (
+            str(component.get("text") or "")
+            if node_type is NodeType.SENTENCE
+            else _table_text(component)
+        )
+        if not text:
+            return
+        table_image = None
+        if node_type is NodeType.TABLE:
+            table_image, absent = _table_image(component, image_lookup)
+            missing_images.extend(
+                f"{title}:{component_id}:{filename}" for filename in absent
+            )
+        node = EvidenceNode(
+            node_id,
+            title,
+            node_type,
+            text=text,
+            image_path=str(table_image) if table_image else None,
+            provenance={"dataset": "MultimodalQA", "component_id": component_id},
+        )
+    graph.add_node(node)
+    index[(title, component_id)] = node_id
+    if node_type is not NodeType.FIGURE or not (caption := _caption_text(component)):
+        return
+    caption_id = f"{node_id}:caption"
+    graph.add_node(
+        EvidenceNode(
+            caption_id,
+            title,
+            NodeType.CAPTION,
+            text=caption,
+            provenance={"dataset": "MultimodalQA", "derived": "caption"},
+        )
+    )
+    graph.add_edge(
+        EvidenceEdge(
+            caption_id,
+            node_id,
+            RelationType.CAPTION_OF,
+            mandatory_for_closure=True,
+        )
+    )
+
+
+def _parquet_components(
+    row: dict[str, Any], kind: str
+) -> list[tuple[str, str, dict[str, Any]]]:
+    decoded = {key: _decode_nested(value) for key, value in row.items()}
+    title = str(
+        decoded.get("doc_title")
+        or decoded.get("title")
+        or decoded.get("webpage_title")
+        or ""
+    )
+    component_id = str(
+        decoded.get("component_id")
+        or decoded.get("id")
+        or decoded.get("componentId")
+        or ""
+    )
+    if title and component_id:
+        component = dict(decoded)
+        for key in ("component", "content", "value", "metadata"):
+            nested = decoded.get(key)
+            if isinstance(nested, dict):
+                component.update(nested)
+        return [(title, component_id, component)]
+
+    container = decoded.get(kind) or decoded.get(f"{kind}_component")
+    if isinstance(container, list) and all(
+        isinstance(item, (list, tuple)) and len(item) == 2 for item in container
+    ):
+        container = dict(container)
+    if title and isinstance(container, dict):
+        return [
+            (title, str(key), _component_mapping(value, kind))
+            for key, value in container.items()
+        ]
+    raise RuntimeError(
+        f"Unsupported MultimodalQA {kind}.parquet schema; columns={sorted(row)}"
+    )
+
+
+def _component_mapping(value: Any, kind: str) -> dict[str, Any]:
+    value = _decode_nested(value)
+    if isinstance(value, dict):
+        return value
+    return {"text" if kind == "text" else kind: value}
+
+
+def _decode_nested(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped or stripped[0] not in "[{":
+        return value
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return value
+
+
+def _restore_parquet_images(
+    path: Path, image_root: Path, *, force: bool
+) -> dict[str, Path]:
+    image_root.mkdir(parents=True, exist_ok=True)
+    lookup: dict[str, Path] = {}
+    invalid_rows = 0
+    for row in _iter_parquet_rows(path):
+        name = _image_name(row)
+        payload = _image_payload(row)
+        if not name or payload is None:
+            invalid_rows += 1
+            continue
+        target = image_root / _restored_image_name(name, payload)
+        valid = valid_image_file(target)
+        if force or not valid:
+            target.write_bytes(payload)
+            valid = valid_image_file(target)
+        if not valid:
+            invalid_rows += 1
+            continue
+        resolved = target.resolve()
+        lookup[name] = resolved
+        lookup[Path(name).name] = resolved
+    if invalid_rows:
+        logger.warning(
+            "Skipped %d invalid MultimodalQA image_dump rows", invalid_rows
+        )
+    return lookup
+
+
+def _image_name(row: dict[str, Any]) -> str:
+    for key in ("image_name", "filename", "name", "path"):
+        value = row.get(key)
+        if isinstance(value, str) and value:
+            return value
+    image = row.get("image")
+    if isinstance(image, dict):
+        for key in ("path", "image_name", "filename"):
+            value = image.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return ""
+
+
+def _image_payload(row: dict[str, Any]) -> bytes | None:
+    for key in ("image_bytes", "bytes", "data", "image"):
+        payload = row.get(key)
+        if isinstance(payload, dict):
+            payload = payload.get("bytes") or payload.get("data")
+        if isinstance(payload, (bytes, bytearray, memoryview)):
+            return bytes(payload)
+        if isinstance(payload, list) and all(
+            isinstance(value, int) and 0 <= value <= 255 for value in payload
+        ):
+            return bytes(payload)
+    return None
+
+
+def _restored_image_name(name: str, payload: bytes) -> str:
+    suffix = Path(name).suffix.casefold()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+        suffix = _image_suffix(payload)
+    return f"{safe_name(name)}{suffix}"
+
+
+def _image_suffix(payload: bytes) -> str:
+    if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if payload.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
+        return ".webp"
+    if payload.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if payload.startswith(b"BM"):
+        return ".bmp"
+    if payload.startswith((b"II*\x00", b"MM\x00*")):
+        return ".tif"
+    return ".png"
+
+
+def _iter_parquet_rows(path: Path):
+    try:
+        import pyarrow.parquet as parquet
+    except ImportError as exc:  # pragma: no cover - deployment guard
+        raise RuntimeError(
+            "Reading the current MultimodalQA snapshot requires PyArrow. "
+            "Install the unified project dependencies."
+        ) from exc
+    source = parquet.ParquetFile(path)
+    for batch in source.iter_batches(batch_size=2048):
+        yield from batch.to_pylist()
+
+
+def _required_path(paths: dict[str, Path | None], name: str) -> Path:
+    path = paths[name]
+    if path is None:  # pragma: no cover - guarded by snapshot validation
+        raise FileNotFoundError(name)
+    return path
 
 
 def _samples(
@@ -165,9 +405,32 @@ def _samples(
         modalities: list[str] = []
         paper_ids: set[str] = set()
         complete = True
-        for evidence in row.get("evidences", []):
-            component_id = str(evidence.get("gold_component_id", ""))
-            title = str(evidence.get("gold_webpage_title", ""))
+        raw_evidence = row.get("evidences") or row.get("evidence") or []
+        for evidence in raw_evidence:
+            if isinstance(evidence, dict):
+                component_id = str(
+                    evidence.get("gold_component_id")
+                    or evidence.get("component_id")
+                    or evidence.get("1")
+                    or ""
+                )
+                title = str(
+                    evidence.get("gold_webpage_title")
+                    or evidence.get("doc_title")
+                    or evidence.get("0")
+                    or ""
+                )
+                modality = str(
+                    evidence.get("mmqa_doc_modality")
+                    or _component_modality(component_id)
+                )
+            elif isinstance(evidence, (list, tuple)) and len(evidence) >= 2:
+                title, component_id = str(evidence[0]), str(evidence[1])
+                modality = _component_modality(component_id)
+            else:
+                missing.append(f"{row.get('qid')}:invalid-evidence:{evidence!r}")
+                complete = False
+                continue
             node_id = index.get((title, component_id))
             if node_id is None and len(by_component[component_id]) == 1:
                 node_id = by_component[component_id][0]
@@ -177,11 +440,13 @@ def _samples(
                 continue
             gold.append(node_id)
             paper_ids.add(paper_by_node[node_id])
-            modalities.append(str(evidence.get("mmqa_doc_modality", "text")))
+            modalities.append(modality)
         if not complete or not gold:
             continue
         answers = row.get("answers", [])
-        answer = answers[0].get("answer", "") if answers and isinstance(answers[0], dict) else ""
+        answer = row.get("answer", "")
+        if not answer and answers and isinstance(answers[0], dict):
+            answer = answers[0].get("answer", "")
         samples.append(
             {
                 "query_id": f"multimodalqa::{row['qid']}",
@@ -195,12 +460,26 @@ def _samples(
     return samples, missing
 
 
+def _component_modality(component_id: str) -> str:
+    prefix = component_id.casefold().split("_", 1)[0]
+    if prefix in {"i", "image"}:
+        return "image"
+    if prefix in {"t", "table"}:
+        return "table"
+    return "text"
+
+
 def _table_text(component: dict[str, Any]) -> str:
     if component.get("text"):
         return " ".join(str(component["text"]).split())
-    refs = component.get("refs", {})
+    refs = _decode_nested(component.get("refs", {}))
+    if not isinstance(refs, dict):
+        refs = {}
     rows: list[str] = []
-    for row in component.get("table", []):
+    table = _decode_nested(component.get("table", []))
+    for row in table if isinstance(table, list) else []:
+        if not isinstance(row, list):
+            row = [row]
         cells = []
         for cell in row:
             if isinstance(cell, dict) and "ref" in cell:
@@ -224,9 +503,14 @@ def _caption_text(component: dict[str, Any]) -> str:
 def _table_image(
     component: dict[str, Any], image_lookup: dict[str, Path]
 ) -> tuple[Path | None, list[str]]:
-    refs = component.get("refs", {})
+    refs = _decode_nested(component.get("refs", {}))
+    if not isinstance(refs, dict):
+        refs = {}
     filenames: list[str] = []
-    for row in component.get("table", []):
+    table = _decode_nested(component.get("table", []))
+    for row in table if isinstance(table, list) else []:
+        if not isinstance(row, list):
+            row = [row]
         for cell in row:
             if isinstance(cell, dict) and "ref" in cell:
                 cell = refs.get(str(cell["ref"]), cell)

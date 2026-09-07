@@ -68,7 +68,7 @@ paper-rag benchmark prepare --datasets mmlongbench_doc --root data/benchmarks
 
 `--max-documents 5` 只用于冒烟测试，报告会标记为 `partial_documents`。已有官方快照可通过 `--dataset-source "mmlongbench_doc=/data/MMLongBench-Doc"` 使用。
 
-MultimodalQA 默认下载 `JoohyungYun/multimodalqa_doc`，自动解压其中的 `parsed_documents` 和 `image_components` ZIP，读取 `QAs_dev_labeled.json`、`parsed_documents/dev` 和 `image_components/dev`。已下载的快照和解压标记会复用；text、table、image 分别建成 Sentence、Table、Figure：
+MultimodalQA 默认下载 `JoohyungYun/multimodalqa_doc`。当前 Hugging Face 快照中的 `dev.parquet`、`text.parquet`、`table.parquet`、`image.parquet` 和 `image_dump.parquet` 可直接读取，图片二进制会恢复到 processed 目录；无需手工运行仓库附带的 `load.py`。适配器也继续兼容旧版 `QAs_dev_labeled.json`、`parsed_documents`、`image_components` 目录或 ZIP。text、table、image 分别建成 Sentence、Table、Figure：
 
 ```bash
 paper-rag benchmark prepare --datasets multimodalqa --root data/benchmarks

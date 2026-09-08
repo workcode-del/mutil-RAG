@@ -63,7 +63,7 @@ def create_app(pipeline: ScientificRAGPipeline | None = None):
         )
         return {
             "answer": result.answer.text if result.answer else None,
-            "evidence_ids": result.answer.evidence_ids if result.answer else [],
+            "evidence_ids": result.answer.evidence_ids if result.answer else None,
             "query_spec": {
                 "answer_type": result.query.answer_type,
                 "entity_type": result.query.entity_type,

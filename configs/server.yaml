@@ -11,6 +11,7 @@ vector_store:
 
 graph_index:
   hidden_dimension: 256
+  precision: auto
 
 reranker:
   enabled: true

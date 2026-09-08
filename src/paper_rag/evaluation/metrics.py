@@ -112,12 +112,13 @@ def result_metrics(
         )
         metrics["answer_token_f1"] = token_f1(result.answer.text, reference_answer)
         metrics["answer_rouge_l_f1"] = rouge_l_f1(result.answer.text, reference_answer)
-        cited = set(result.answer.evidence_ids)
-        citation_precision = len(cited & gold_ids) / len(cited) if cited else 0.0
-        citation_recall = len(cited & gold_ids) / len(gold_ids)
-        metrics["citation_precision"] = citation_precision
-        metrics["citation_recall"] = citation_recall
-        metrics["citation_f1"] = harmonic_mean(citation_precision, citation_recall)
+        if result.answer.evidence_ids is not None:
+            cited = set(result.answer.evidence_ids)
+            citation_precision = len(cited & gold_ids) / len(cited) if cited else 0.0
+            citation_recall = len(cited & gold_ids) / len(gold_ids)
+            metrics["citation_precision"] = citation_precision
+            metrics["citation_recall"] = citation_recall
+            metrics["citation_f1"] = harmonic_mean(citation_precision, citation_recall)
     return metrics
 
 

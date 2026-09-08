@@ -118,7 +118,7 @@ def evaluate(
                 "selected_node_ids": sorted(result.forest.node_ids),
                 "forest_metadata": [tree.metadata for tree in result.forest.trees],
                 "answer": result.answer.text if result.answer else None,
-                "evidence_ids": result.answer.evidence_ids if result.answer else [],
+                "evidence_ids": result.answer.evidence_ids if result.answer else None,
             }
         )
         if index == total or index % 50 == 0:

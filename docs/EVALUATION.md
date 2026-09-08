@@ -27,7 +27,7 @@ paper-rag benchmark all --datasets peerqa --root data/benchmarks \
 ```bash
 paper-rag benchmark prepare --datasets peerqa mmdocrag --root data/benchmarks
 paper-rag benchmark train --datasets peerqa mmdocrag --root data/benchmarks \
-  --config configs/default.yaml
+  --config configs/default.yaml --train-batch-size 64 --train-precision auto
 paper-rag benchmark run --datasets peerqa mmdocrag --root data/benchmarks \
   --config configs/default.yaml --split test --systems dense full \
   --hgt-artifacts outputs/benchmark_graph
@@ -44,7 +44,32 @@ paper-rag benchmark run --datasets peerqa --root data/benchmarks \
   --rgcn-artifacts outputs/benchmark_rgcn
 ```
 
+### 图模型训练性能与精度
+
+`--train-batch-size` 表示一个优化 step 最多包含的 query—evidence pair 数，默认
+为 64。训练器先按论文（跨论文问题按论文集合）聚合监督样本，再把多个小论文组
+装入同一 batch；单篇论文的 pair 超过上限时才拆分。因此 batch 仍尽量达到设定
+大小，同时同论文的节点表示可在该 step 内复用。
+
+基础向量首次训练时会从逐节点压缩 NPZ 转换成同目录的连续
+`base_embeddings.matrix.npy`，后续使用内存映射并一次传入 GPU。batch 只保存节点
+行号与边索引，不再逐节点解压 NPZ 或重复构造 PyG `HeteroData`。转换是一次性操作，
+不要把首次转换耗时计入稳定态 epoch 吞吐；正式系统实验应分别报告转换/索引耗时和
+纯训练耗时。
+
+`--train-precision auto` 在支持 BF16 的 CUDA 设备（包括 A800）上选择 BF16，
+否则 CUDA 使用 FP16、CPU 使用 FP32。类型投影和图消息传播使用混合精度；向量
+归一化、margin loss、InfoNCE、梯度裁剪、模型主参数和 AdamW 状态保持 FP32。
+FP16 模式额外启用动态 loss scaling。正式 HGT/R-GCN 对照必须保持 batch size、
+精度模式、轮数和随机种子一致，`training.json` 会记录这些字段以及准备、逐轮训练、
+全图导出耗时和峰值 GPU 显存。
+
 已有下载和解析结果会复用；`--force` 重做准备，`--reindex` 重建 embedding 缓存。缓存 sidecar 校验图哈希和 embedding 配置哈希，模型或 query instruction 改变时自动失效。benchmark 在 NPZ 上做精确 cosine 检索，不依赖 Qdrant；在线服务仍使用配置的向量库。
+
+生成后端按 OpenAI-compatible Chat Completions 读取普通文本：优先使用标准的
+`choices[0].message.content`，为空时兼容 `reasoning_content` 和 `reasoning`。外部对话
+模型不返回项目内部证据 ID 时，报告保留 `selected_node_ids` 作为实际输入证据，并省略
+引用 precision/recall/F1；不能把缺失的引用标识当作空引用参与平均。
 
 ### 数据集与口径
 
@@ -185,6 +210,7 @@ data/benchmarks/<dataset>/
 │   ├── graph.json
 │   ├── train.jsonl / dev.jsonl / test.jsonl / all.jsonl
 │   ├── base_embeddings.npz
+│   ├── base_embeddings.matrix.npy / base_embeddings.matrix.json
 │   └── prepare_report.json
 └── reports/
     ├── <split>_<system>.json

@@ -165,7 +165,7 @@ def build_generator(config: dict[str, Any]) -> OpenAICompatibleGenerator:
         generation["model"],
         api_key_env=str(generation.get("api_key_env", "PAPER_RAG_API_KEY")),
         timeout=float(generation.get("timeout", 120)),
-        require_evidence_ids=bool(generation.get("require_evidence_ids", True)),
+        extra_body=dict(generation.get("extra_body", {})),
     )
 
 

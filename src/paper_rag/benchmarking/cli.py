@@ -145,11 +145,14 @@ def _add_train_options(parser: argparse.ArgumentParser, *, optional: bool = Fals
     )
     parser.add_argument("--graph-model", choices=("hgt", "rgcn"), default="hgt")
     parser.add_argument("--train-epochs", type=int, default=20)
-    parser.add_argument("--train-batch-size", type=int, default=16)
+    parser.add_argument("--train-batch-size", type=int, default=64)
     parser.add_argument("--train-learning-rate", type=float, default=1e-3)
     parser.add_argument("--relation-weight", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--train-precision", choices=("auto", "bf16", "fp16", "fp32")
+    )
 
 
 def _handle_prepare(args: argparse.Namespace) -> int:
@@ -287,6 +290,7 @@ def _train(args: argparse.Namespace) -> dict[str, dict]:
             relation_weight=args.relation_weight,
             seed=args.seed,
             device=args.device,
+            precision=args.train_precision,
             reindex=args.reindex,
             model_type=args.graph_model,
             allow_partial=getattr(args, "allow_partial", False),

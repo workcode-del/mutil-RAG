@@ -317,6 +317,7 @@ def _train_index(args: argparse.Namespace) -> int:
         heads=int(graph_config.get("heads", 4)),
         model_type=args.model_type,
         rgcn_bases=int(graph_config.get("rgcn_bases", 8)),
+        precision=args.precision or str(graph_config.get("precision", "auto")),
     )
     print(json.dumps({"query_pairs": str(pairs), "artifacts": str(artifacts)}, indent=2))
     return 0
@@ -394,11 +395,12 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--work-dir", default="data/train/srmg")
     train.add_argument("--config", default="configs/default.yaml")
     train.add_argument("--epochs", type=int, default=20)
-    train.add_argument("--batch-size", type=int, default=16)
+    train.add_argument("--batch-size", type=int, default=64)
     train.add_argument("--learning-rate", type=float, default=1e-3)
     train.add_argument("--relation-weight", type=float, default=0.2)
     train.add_argument("--seed", type=int, default=42)
     train.add_argument("--device", default="cuda")
+    train.add_argument("--precision", choices=("auto", "bf16", "fp16", "fp32"))
     train.add_argument("--model-type", choices=("hgt", "rgcn"), default="hgt")
     train.set_defaults(handler=_train_index)
     from paper_rag.benchmarking.cli import add_benchmark_parser

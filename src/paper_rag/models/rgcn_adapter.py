@@ -106,8 +106,9 @@ def create_rgcn_model(
             )
             for conv in self.convs:
                 messages = conv(hidden, edge_index, edge_type_tensor)
-                hidden = torch.nn.functional.normalize(
-                    hidden + self.dropout(messages), dim=-1
+                combined = hidden + self.dropout(messages)
+                hidden = torch.nn.functional.normalize(combined.float(), dim=-1).to(
+                    combined.dtype
                 )
             result = {}
             for node_type in present_types:
@@ -116,8 +117,9 @@ def create_rgcn_model(
             return result
 
         def encode_query(self, query_embedding: Any) -> Any:
-            return torch.nn.functional.normalize(
-                self.query_projection(query_embedding), dim=-1
+            projected = self.query_projection(query_embedding)
+            return torch.nn.functional.normalize(projected.float(), dim=-1).to(
+                projected.dtype
             )
 
     return ScientificRGCN()

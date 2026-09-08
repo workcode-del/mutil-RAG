@@ -63,16 +63,18 @@ def create_hgt_model(metadata: tuple[list[str], list[tuple[str, str, str]]], con
             for conv in self.convs:
                 messages = conv(hidden, edge_index_dict)
                 hidden = {
-                    node_type: torch.nn.functional.normalize(
+                    node_type: _stable_normalize(
                         residual
-                        + self.dropout(messages.get(node_type, torch.zeros_like(residual))),
-                        dim=-1,
+                        + self.dropout(messages.get(node_type, torch.zeros_like(residual)))
                     )
                     for node_type, residual in hidden.items()
                 }
             return hidden
 
         def encode_query(self, query_embedding: Any) -> Any:
-            return torch.nn.functional.normalize(self.query_projection(query_embedding), dim=-1)
+            return _stable_normalize(self.query_projection(query_embedding))
+
+    def _stable_normalize(value):
+        return torch.nn.functional.normalize(value.float(), dim=-1).to(value.dtype)
 
     return SRMGHGT()

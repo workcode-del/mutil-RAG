@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
-import os
 import base64
 import mimetypes
+import os
 from pathlib import Path
 
 from paper_rag.domain import EvidenceForest, QuerySpec
@@ -19,13 +18,13 @@ class OpenAICompatibleGenerator:
         model: str,
         api_key_env: str = "PAPER_RAG_API_KEY",
         timeout: float = 120.0,
-        require_evidence_ids: bool = True,
+        extra_body: dict | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key_env = api_key_env
         self.timeout = timeout
-        self.require_evidence_ids = require_evidence_ids
+        self.extra_body = extra_body or {}
 
     def generate(
         self, query: QuerySpec, forest: EvidenceForest, graph: EvidenceGraph
@@ -36,8 +35,8 @@ class OpenAICompatibleGenerator:
             raise RuntimeError("Install app dependencies for generation HTTP calls") from exc
         context, image_paths = serialize_forest(forest, graph)
         prompt = (
-            "Answer only from the supplied evidence. Return JSON with keys answer and "
-            "evidence_ids. Every atomic claim must cite existing bracketed evidence IDs.\n\n"
+            "Answer the question using only the supplied evidence. Give only the answer, "
+            "without discussing these instructions.\n\n"
             f"Question: {query.query}\n\n{context}"
         )
         content: list[dict] = [{"type": "text", "text": prompt}]
@@ -52,30 +51,49 @@ class OpenAICompatibleGenerator:
         api_key = os.getenv(self.api_key_env)
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": 0,
+            **self.extra_body,
+        }
         response = requests.post(
             f"{self.base_url}/chat/completions",
             headers=headers,
-            json={
-                "model": self.model,
-                "messages": [{"role": "user", "content": content}],
-                "temperature": 0,
-                "response_format": {"type": "json_object"},
-            },
+            json=payload,
             timeout=self.timeout,
         )
         response.raise_for_status()
         raw = response.json()
-        content = raw["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
-        evidence_ids = list(
-            dict.fromkeys(str(value) for value in parsed.get("evidence_ids", []))
-        )
-        invalid = set(evidence_ids) - forest.node_ids
-        if invalid:
-            raise ValueError(
-                f"Generator cited evidence outside retrieved forest: {sorted(invalid)}"
-            )
-        answer_text = str(parsed.get("answer", ""))
-        if self.require_evidence_ids and answer_text.strip() and not evidence_ids:
-            raise ValueError("Generator returned a non-empty answer without evidence IDs")
-        return Answer(answer_text, evidence_ids, raw)
+        return Answer(_response_text(raw), None, raw)
+
+
+def _response_text(response: dict) -> str:
+    try:
+        choice = response["choices"][0]
+        message = choice["message"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError("Invalid OpenAI chat completion response") from exc
+    if not isinstance(message, dict):
+        raise ValueError("Invalid OpenAI chat completion response")
+    for field in ("content", "reasoning_content", "reasoning"):
+        text = _message_text(message.get(field))
+        if text:
+            return text
+    raise ValueError(
+        "OpenAI chat completion returned no text in content, reasoning_content, or reasoning; "
+        f"finish_reason={choice.get('finish_reason')!r}"
+    )
+
+
+def _message_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "".join(_message_text(part) for part in value).strip()
+    if isinstance(value, dict):
+        for field in ("text", "content", "value"):
+            text = _message_text(value.get(field))
+            if text:
+                return text
+    return ""

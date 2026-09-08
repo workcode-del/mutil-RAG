@@ -44,6 +44,8 @@ graph_index:
   layers: 2
   heads: 4
   rgcn_bases: 8
+  # A800默认使用BF16混合精度；损失、模型主参数和AdamW状态保持FP32。
+  precision: auto
 
 reranker:
   enabled: true
@@ -75,4 +77,4 @@ retrieval:
 generation:
   base_url: https://chat.tianhe-tech.com/v1/
   model: Qwen3.5-397B-A17B
-  require_evidence_ids: true
+  timeout: 600

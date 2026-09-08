@@ -24,7 +24,7 @@ python -m pip check
 
 - `embedding`、`reranker`：本地模型、ModelScope ID 和设备；
 - `vector_store`：Qdrant 本地目录或服务地址；
-- `graph_index`：HGT 维度和层数；
+- `graph_index`：HGT/R-GCN 维度、层数和混合精度；
 - `retrieval`：候选扩展、PCST 尺度和预算；
 - `chart`、`generation`：外部 OpenAI-compatible 服务。
 
@@ -107,18 +107,22 @@ paper-rag train-index \
   --base-embeddings data/cache/base_embeddings.npz \
   --output outputs/hgt \
   --config configs/default.yaml \
-  --epochs 20 --device cuda \
+  --epochs 20 --batch-size 64 --device cuda --precision auto \
   --model-type hgt
 ```
 
 把 `--model-type` 改为 `rgcn` 即可训练同数据、同损失和同超参数协议的 R-GCN 基线；两个模型应写到不同的 `--output` 目录。
+
+训练按论文聚合 pair，并把多个论文组装到 `--batch-size` 上限。A800 上
+`--precision auto` 会使用 BF16 混合精度；FP32 保留范围和连续矩阵缓存说明见
+[统一评测](EVALUATION.md#图模型训练性能与精度)。
 
 输出：
 
 - `graph_embeddings.npy`：256 维节点表示；
 - `node_ids.json`：矩阵行与证据 ID 的映射；
 - `query_projector.pt`：在线 query 投影；
-- `training.json`：模型类型、图哈希、训练 query 和关系三元组统计。
+- `training.json`：模型、数据、batch、精度、耗时、峰值显存和关系监督统计。
 
 公开数据的准备、训练和测试可直接使用 `paper-rag benchmark all --train-graph-index --graph-model hgt`；R-GCN 把模型参数改为 `rgcn`，见 [EVALUATION.md](EVALUATION.md)。
 

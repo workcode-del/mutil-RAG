@@ -44,7 +44,7 @@ MMDocRAG 官方协议直接把候选 quote 转成 `Sentence` 或 `Figure`。该�
 
 ## 3. 基础索引与图模型
 
-基础索引把文本节点、原图和表格分别编码为 2048 维向量，写入 Qdrant，并保存同一份 NPZ 供训练使用。Table 有截图时使用图文联合编码，只有 HTML/文本时使用文本编码。检索与重排均显式包含 Table，并按节点类型分别取 top-k，减少文本数量对图片和表格召回的挤压。
+基础索引把文本节点、原图和表格分别编码为 2048 维向量，写入 Qdrant，并保存同一份 NPZ。图训练首次使用该缓存时生成连续矩阵 sidecar，之后一次装入 GPU；batch 只传递节点行号和边索引。Table 有截图时使用图文联合编码，只有 HTML/文本时使用文本编码。检索与重排均显式包含 Table，并按节点类型分别取 top-k，减少文本数量对图片和表格召回的挤压。
 
 HGT 使用配置中的节点类型投影和两层异构消息传递：
 
@@ -60,7 +60,7 @@ R-GCN 强基线复用完全相同的节点/查询投影、训练样本、hard ne
 1. 查询—证据 margin loss：每个 gold 节点配一个同类型 hard negative；
 2. 关系 InfoNCE：使用 `caption_of`、`refers_to`、`derived_from` 和 `next_sentence` 边。
 
-训练关系只取训练论文，但模型对整张图计算节点表示。因此当前实现属于按论文隔离监督的传导式图编码；最终报告必须保证训练 query 与测试 query 不重叠。训练产物中的 `training.json` 记录图哈希、训练 query ID 和关系三元组数。
+训练 batch 先按论文或跨论文集合聚合同一批监督，再把多个论文组装到不超过 `batch_size` 的 step；只收集当前 batch 论文的节点特征和关系边。验证/测试论文的节点与边不参与梯度，训练完成后才用共享类型投影和消息传递参数逐论文导出全图表示。因此该实现是在固定节点/关系类型模式下对未见论文做归纳编码，不应扩大为对未见节点类型或关系类型的泛化。A800 默认采用 BF16 混合精度，归一化、损失、梯度裁剪、模型主参数和优化器状态保持 FP32。训练产物中的 `training.json` 记录图哈希、训练 query ID、关系三元组数、batch 策略和实际精度。
 
 ## 4. 检索器
 
@@ -83,13 +83,13 @@ EC-BFR 的闭包规则以最小不动点执行：只沿显式标记为强制且�
 
 `list-figures` 导出全部 Figure，当前没有自动折线图分类器，需要人工筛选清单。`enrich-charts` 可读取人工提供的 `linearized_table`，调用 OpenAI-compatible 多模态服务重复解析并聚合，或使用 PP-Chart2Table/DePlot 本地后端，生成 `ChartData --derived_from--> Figure`。空、可疑或低置信度结果会被跳过。
 
-生成模块是可选项。它把正文、表格文本和 Figure/Table 截图发送到 OpenAI-compatible `/chat/completions`，要求返回 JSON：
-
-```json
-{"answer":"...","evidence_ids":["paper:sentence:1:0"]}
-```
-
-程序拒绝森林外 ID，也拒绝无引用的非空答案；但仍不能验证每个自然语言断言是否真正由对应证据支持。
+生成模块是可选项。它把正文、表格文本和 Figure/Table 截图作为标准多模态
+`messages` 发送到 OpenAI-compatible `/chat/completions`，并从
+`choices[0].message.content` 读取普通文本答案。该标准字段为空时，适配器兼容读取部分
+供应商使用的 `reasoning_content` 或 `reasoning` 字段；`content` 始终优先，避免把思考
+过程覆盖最终答案。供应商扩展请求参数可选地通过 `generation.extra_body` 透传。通用
+对话接口不提供项目内部证据 ID，因此该后端不计算引用指标；检索阶段的
+`selected_node_ids` 仍完整记录生成上下文的来源。
 
 ## 6. 代码边界
 

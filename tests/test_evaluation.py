@@ -14,6 +14,7 @@ from paper_rag.evaluation.metrics import ranking_metrics, result_metrics, rouge_
 from paper_rag.evaluation.comparison import DEFAULT_METRICS
 from paper_rag.evaluation.evidence_mapping import map_evidence, normalize_evidence
 from paper_rag.evidence_graph import EvidenceGraph
+from paper_rag.generation.base import Answer
 from paper_rag.pipeline import PipelineResult
 
 
@@ -46,14 +47,24 @@ def test_result_metrics_separate_ranked_hits_from_selected_evidence() -> None:
             SearchHit("p:s1", "p", NodeType.SENTENCE, 0.9),
         ],
         EvidenceForest([EvidenceTree("p", {"p:s1"}, cost=1)], total_cost=1, budget=10),
+        Answer("answer"),
     )
 
-    metrics = result_metrics(graph, result, {"p:s1"}, cutoffs=(1, 2), latency_ms=2.0)
+    metrics = result_metrics(
+        graph,
+        result,
+        {"p:s1"},
+        cutoffs=(1, 2),
+        latency_ms=2.0,
+        reference_answer="answer",
+    )
 
     assert metrics["recall_at_1"] == 0.0
     assert metrics["recall_at_2"] == 1.0
     assert metrics["evidence_f1"] == 1.0
     assert metrics["budget_violation"] == 0.0
+    assert metrics["answer_exact_match"] == 1.0
+    assert "citation_f1" not in metrics
 
 
 def test_result_metrics_report_each_modality_at_every_cutoff() -> None:

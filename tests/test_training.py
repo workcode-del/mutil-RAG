@@ -5,6 +5,7 @@ from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
 from paper_rag.training import (
     _pair_papers,
+    _paper_aware_batches,
     _paper_graph_index,
     _paper_subgraph,
     _relation_triples,
@@ -55,6 +56,7 @@ def test_query_pairs_choose_same_type_hard_negative(tmp_path) -> None:
     )
 
     assert read_jsonl(output)[0]["negative_node_id"] == "p:hard"
+    assert embeddings.with_suffix(".matrix.npy").exists()
 
 
 def test_query_pairs_keep_all_gold_evidence(tmp_path) -> None:
@@ -137,6 +139,37 @@ def test_training_batch_includes_negative_papers() -> None:
 
     assert papers == {"a", "b"}
     assert set(subgraph.nodes) == {"a:positive", "b:negative"}
+
+
+def test_paper_aware_batches_pack_multiple_papers_without_splitting_groups() -> None:
+    graph = EvidenceGraph()
+    rows = []
+    for paper_id, pair_count in (("a", 2), ("b", 1), ("c", 1)):
+        graph.extend(
+            [
+                EvidenceNode(f"{paper_id}:p", paper_id, NodeType.SENTENCE, text="positive"),
+                EvidenceNode(f"{paper_id}:n", paper_id, NodeType.SENTENCE, text="negative"),
+            ],
+            [],
+        )
+        rows.extend(
+            {
+                "query_id": f"{paper_id}:{index}",
+                "positive_node_id": f"{paper_id}:p",
+                "negative_node_id": f"{paper_id}:n",
+            }
+            for index in range(pair_count)
+        )
+
+    batches = _paper_aware_batches(graph, rows, batch_size=3, seed=42)
+
+    assert sorted(map(len, batches)) == [1, 3]
+    assert all(len(batch) <= 3 for batch in batches)
+    assert any(len(_pair_papers(graph, batch)) == 2 for batch in batches)
+    assert any(
+        sum(row["query_id"].startswith("a:") for row in batch) == 2
+        for batch in batches
+    )
 
 
 def test_relation_supervision_ignores_low_confidence_edges() -> None:

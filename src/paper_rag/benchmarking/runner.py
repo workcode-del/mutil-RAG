@@ -301,11 +301,12 @@ def train_benchmark_index(
     config_path: str | Path,
     output: str | Path,
     epochs: int = 20,
-    batch_size: int = 16,
+    batch_size: int = 64,
     learning_rate: float = 1e-3,
     relation_weight: float = 0.2,
     seed: int = 42,
     device: str = "cuda",
+    precision: str | None = None,
     reindex: bool = False,
     model_type: str = "hgt",
     allow_partial: bool = False,
@@ -349,6 +350,7 @@ def train_benchmark_index(
         heads=int(graph_config.get("heads", 4)),
         model_type=model_type,
         rgcn_bases=int(graph_config.get("rgcn_bases", 8)),
+        precision=precision or str(graph_config.get("precision", "auto")),
     )
     metadata = json.loads((artifacts / "training.json").read_text(encoding="utf-8"))
     metadata["dataset"] = layout.name

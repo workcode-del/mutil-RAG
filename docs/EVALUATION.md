@@ -89,6 +89,7 @@ FP16 模式额外启用动态 loss scaling。正式 HGT/R-GCN 对照必须保持
 - PeerQA 直接使用官方 `papers.jsonl` 的句子和 `idx` 构图，按 `paper_id` 稳定划分；`--peerqa-download-pdfs` 仅用于 MinerU 全文扩展实验。
 - MMDocRAG 默认 `setting=20`，把 quote 转成 Sentence/Figure，并用 `candidate_node_ids` 保证所有方法使用相同候选；dev 用于内部 train/dev，evaluation 为 test。
 - MMDocRAG quote 图不虚构全文关系，因此 `relation_triples` 可能为 0。下载 PDF 的 `--mmdocrag-download-pdfs` 目前不负责把全文节点与 quote gold 对齐。
+- MMDocRAG 官方 `dev_20.jsonl` 的 `q_id=1736` 没有 `gold_quotes`，无法定义检索监督或 Recall。准备阶段会跳过这类样本，并在 `prepare_report.json` 的 `skipped_no_gold_count`、`skipped_no_gold` 中留痕；不会伪造 gold quote，也不会放宽其他样本的证据一致性校验。
 - 自动下载均固定官方 revision，并把 `source_revision` 写入 `prepare_report.json`；传入本地 `--dataset-source` 时该值为空，由使用者记录本地快照版本。
 
 #### 新增的跨论文多模态数据
@@ -108,7 +109,8 @@ paper-rag benchmark prepare --datasets multimodalqa --root data/benchmarks
 ```
 
 报告会写入 `evaluation_scope=lilac_component_dev_snapshot` 和
-`official_benchmark=false`。即便缺图和缺 gold 已清零，运行或训练仍需显式
+`official_benchmark=false`。报告中的 `source_samples` 是源 QA 数，原始证据列表为空的
+query 会记录到 `skipped_no_gold_count` 和 `skipped_no_gold`。即便缺图和缺 gold 已清零，运行或训练仍需显式
 `--allow-partial`，论文中应称为“LILaC 组件级 MultimodalQA 派生设置”。
 
 SPIQA 使用官方 train、val、test-A 划分；`--split official` 固定映射到 test-A，test-A 不参与 HGT 训练。每篇论文的 figure/table 是公平候选集，caption 单独建点，并且只添加数据明确给出的 `caption_of`：
@@ -132,7 +134,8 @@ paper-rag benchmark prepare --datasets m3docvqa \
 ```
 
 该适配器把报告标为 `derived_page_labeled_snapshot` 和
-`official_benchmark=false`；运行或训练时必须显式加 `--allow-partial`，结果只能作为派生诊断实验。
+`official_benchmark=false`；`source_samples`、`skipped_no_gold_count` 和
+`skipped_no_gold` 会保留无页级 gold 的样本数量及 query ID。运行或训练时必须显式加 `--allow-partial`，结果只能作为派生诊断实验。
 
 M3DocVQA 与 MMLongBench-Doc 的官方检索单位是整页，所以页面建为 Figure；`required_modalities` 只记录证据来源，不能据此把整页虚构成 Table。Table 的直接分模态评测来自 MultimodalQA 组件或 MinerU 全文图。
 

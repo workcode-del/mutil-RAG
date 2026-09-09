@@ -14,7 +14,12 @@ from paper_rag.benchmarking.base import (
 )
 from paper_rag.benchmarking.cli import _ranking_cutoffs, _report_summaries
 from paper_rag.benchmarking.download import _valid_download, extract_zip
-from paper_rag.benchmarking.mmdocrag import _build_quote_graph, _sample, _string_list
+from paper_rag.benchmarking.mmdocrag import (
+    _build_quote_graph,
+    _rows_with_gold,
+    _sample,
+    _string_list,
+)
 from paper_rag.benchmarking.multimodalqa import (
     _component_graph,
     _samples,
@@ -76,6 +81,42 @@ def test_m3docvqa_does_not_claim_official_page_labels(tmp_path) -> None:
     layout = BenchmarkLayout.create("m3docvqa", tmp_path)
     with pytest.raises(ValueError, match="rather than gold page IDs"):
         prepare_m3docvqa(layout, source=None)
+
+
+def test_m3docvqa_reports_rows_without_gold_evidence(tmp_path) -> None:
+    source = tmp_path / "source"
+    pages = source / "pdf_pages" / "dev" / "paper"
+    pages.mkdir(parents=True)
+    (pages / "page_1.png").write_bytes(b"\x89PNG\r\n\x1a\nvalid-test-stub")
+    (source / "M3DocVQA_dev_labeled.json").write_text(
+        __import__("json").dumps(
+            [
+                {
+                    "qid": "q1",
+                    "question": "What is shown?",
+                    "answers": ["answer"],
+                    "evidences": [{"gold_page": "page_1.png"}],
+                },
+                {
+                    "qid": "q-without-gold",
+                    "question": "No evidence is annotated",
+                    "answers": ["unknown"],
+                    "evidences": [],
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = prepare_m3docvqa(
+        BenchmarkLayout.create("m3docvqa", tmp_path / "benchmarks"),
+        source=source,
+    )
+
+    assert report["source_samples"] == 2
+    assert report["samples"] == 1
+    assert report["skipped_no_gold_count"] == 1
+    assert report["skipped_no_gold"] == ["m3docvqa::q-without-gold"]
 
 
 def test_peerqa_official_rows_build_stable_nodes() -> None:
@@ -239,6 +280,18 @@ def test_connected_split_uses_all_splits_when_possible() -> None:
 def test_mmdocrag_modality_metadata_accepts_scalar_or_list() -> None:
     assert _string_list("image") == ["image"]
     assert _string_list(["text", "image"]) == ["text", "image"]
+
+
+def test_mmdocrag_skips_unscorable_rows_without_gold_quotes() -> None:
+    rows = [
+        {"q_id": 1, "gold_quotes": ["text1"]},
+        {"q_id": 1736, "gold_quotes": []},
+    ]
+
+    usable, skipped = _rows_with_gold(rows, "development")
+
+    assert [row["q_id"] for row in usable] == [1]
+    assert skipped == ["mmdocrag::development::1736"]
 
 
 def test_benchmark_cutoffs_are_dataset_specific() -> None:
@@ -492,7 +545,13 @@ def test_multimodalqa_prepare_reads_current_parquet_snapshot(
                 "question": "Compare the evidence",
                 "answer": "Ours",
                 "evidence": [["Paper_A", "t_1"], ["Paper_A", "i_1"]],
-            }
+            },
+            {
+                "qid": "q-without-gold",
+                "question": "No evidence is annotated",
+                "answer": "Unknown",
+                "evidence": [],
+            },
         ],
     }
     monkeypatch.setattr(
@@ -508,7 +567,10 @@ def test_multimodalqa_prepare_reads_current_parquet_snapshot(
     assert report["graph_mode"] == "official_parquet_component_graph"
     assert report["official_benchmark"] is False
     assert report["evaluation_scope"] == "lilac_component_dev_snapshot"
+    assert report["source_samples"] == 2
     assert report["samples"] == 1
+    assert report["skipped_no_gold_count"] == 1
+    assert report["skipped_no_gold"] == ["multimodalqa::q-without-gold"]
     assert report["missing_images"] == []
     assert any((layout.processed / "images").iterdir())
     assert samples[0]["required_modalities"] == ["table", "image"]

@@ -45,6 +45,17 @@ def prepare_mmdocrag(
 
     development = read_jsonl(dev_path)
     evaluation = read_jsonl(test_path)
+    source_development_samples = len(development)
+    source_test_samples = len(evaluation)
+    development, skipped_development = _rows_with_gold(development, "development")
+    evaluation, skipped_test = _rows_with_gold(evaluation, "test")
+    skipped_no_gold = skipped_development + skipped_test
+    if skipped_no_gold:
+        logger.warning(
+            "Skipping MMDocRAG samples without gold quotes: count=%d ids=%s",
+            len(skipped_no_gold),
+            skipped_no_gold[:10],
+        )
     image_lookup = _file_lookup(image_root, {".jpg", ".jpeg", ".png", ".webp"})
     graph, missing_images = _build_quote_graph(
         [("development", row) for row in development]
@@ -73,8 +84,12 @@ def prepare_mmdocrag(
         "official_benchmark": True,
         "graph_mode": "official_quote_candidates",
         "setting": setting,
+        "source_development_samples": source_development_samples,
+        "source_test_samples": source_test_samples,
         "development_samples": len(development_samples),
         "test_samples": len(test_samples),
+        "skipped_no_gold_count": len(skipped_no_gold),
+        "skipped_no_gold": skipped_no_gold,
         "nodes": len(graph.nodes),
         "edges": len(graph.edges),
         "graph_training_signal": bool(graph.edges),
@@ -91,6 +106,18 @@ def prepare_mmdocrag(
         len(missing_images),
     )
     return report
+
+
+def _rows_with_gold(
+    rows: list[dict[str, Any]], split: str
+) -> tuple[list[dict[str, Any]], list[str]]:
+    usable = [row for row in rows if row.get("gold_quotes")]
+    skipped = [
+        f"mmdocrag::{split}::{row.get('q_id')}"
+        for row in rows
+        if not row.get("gold_quotes")
+    ]
+    return usable, skipped
 
 
 def _download(layout: BenchmarkLayout, filename: str, force: bool) -> Path:

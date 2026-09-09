@@ -131,7 +131,11 @@ def prepare_m3docvqa(
     graph, by_name, invalid_images = _page_image_graph("m3docvqa", page_root)
     samples: list[dict[str, Any]] = []
     missing: list[str] = []
+    skipped_no_gold: list[str] = []
     for row in rows:
+        if not row.get("evidences"):
+            skipped_no_gold.append(f"m3docvqa::{row.get('qid')}")
+            continue
         gold: list[str] = []
         modalities: list[str] = []
         for evidence in row.get("evidences", []):
@@ -165,7 +169,10 @@ def prepare_m3docvqa(
         "official_benchmark": False,
         "graph_mode": "derived_page_label_graph",
         "evaluation_scope": "derived_page_labeled_snapshot",
+        "source_samples": len(rows),
         "samples": len(samples),
+        "skipped_no_gold_count": len(skipped_no_gold),
+        "skipped_no_gold": skipped_no_gold,
         "nodes": len(graph.nodes),
         "edges": len(graph.edges),
         "graph_training_signal": bool(graph.edges),

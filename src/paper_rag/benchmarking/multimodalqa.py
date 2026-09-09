@@ -73,6 +73,11 @@ def prepare_multimodalqa(
         graph, evidence_index, missing_images = _component_graph(documents, images)
         rows = json.loads(qa_path.read_text(encoding="utf-8"))
         graph_mode = "official_component_graph"
+    skipped_no_gold = [
+        f"multimodalqa::{row.get('qid')}"
+        for row in rows
+        if not (row.get("evidences") or row.get("evidence"))
+    ]
     samples, missing_evidence = _samples(rows, evidence_index)
     _validate_prepared(graph, samples, graph_mode)
     save_graph(graph, layout.graph)
@@ -89,7 +94,10 @@ def prepare_multimodalqa(
         "official_benchmark": False,
         "graph_mode": graph_mode,
         "evaluation_scope": "lilac_component_dev_snapshot",
+        "source_samples": len(rows),
         "samples": len(samples),
+        "skipped_no_gold_count": len(skipped_no_gold),
+        "skipped_no_gold": skipped_no_gold,
         "nodes": len(graph.nodes),
         "edges": len(graph.edges),
         "graph_training_signal": bool(graph.edges),

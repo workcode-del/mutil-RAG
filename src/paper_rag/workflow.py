@@ -92,6 +92,7 @@ def index_graph(
             build_embedder(config),
             batch_size=int(embedding_config.get("text_batch_size", 16)),
             image_batch_size=int(embedding_config.get("image_batch_size", 8)),
+            figure_text_weight=float(embedding_config.get("figure_text_weight", 0.0)),
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         logger.info("Saving embedding cache: vectors=%d path=%s", len(embeddings), target)

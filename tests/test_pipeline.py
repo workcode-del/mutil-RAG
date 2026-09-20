@@ -3,9 +3,12 @@ import pytest
 
 import paper_rag.workflow as workflow
 from paper_rag.benchmarking.runner import _embed_queries
+from paper_rag.bootstrap import validate_graph_embedding_config
+from paper_rag.io import write_json
 from paper_rag.domain import EvidenceNode, NodeType, QuerySpec, SearchHit
 from paper_rag.embedding import ExactEmbeddingStore
 from paper_rag.evidence_graph import EvidenceGraph, save_graph
+from paper_rag.evidence_graph import build_figure_text_views
 from paper_rag.evaluation.runner import EvaluationSample, evaluate
 from paper_rag.indexing import compute_base_embeddings
 from paper_rag.pipeline import ScientificRAGPipeline
@@ -124,6 +127,90 @@ def test_pipeline_reranks_only_configured_top_n() -> None:
     assert "reranker" not in result.hits[2].score_components
 
 
+def test_rerank_quota_preserves_low_ranked_visual_candidates() -> None:
+    graph = EvidenceGraph()
+    hits = [SearchHit(f"p:{i}", "p", NodeType.SENTENCE, 10 - i) for i in range(5)]
+    hits += [SearchHit("p:f", "p", NodeType.FIGURE, 0.1)]
+    pipeline = ScientificRAGPipeline(
+        graph, None, RecordingStore(), None, reranker_top_n=3, reranker_min_per_type=1,
+    )
+    assert [h.node_id for h in pipeline._rerank_candidates(hits)] == ["p:0", "p:1", "p:f"]
+    pipeline.reranker_top_n = 1
+    assert len(pipeline._rerank_candidates(hits)) == 1
+
+
+def test_empty_recall_still_records_zero_reranker_coverage():
+    class EmptyStore(RecordingStore):
+        def search(self, *args, **kwargs):
+            return []
+
+    graph = EvidenceGraph()
+    pipeline = ScientificRAGPipeline(
+        graph, None, EmptyStore(),
+        RankedEvidenceRetriever(graph, top_k=1, budget=10, image_unit=1),
+        reranker=RecordingReranker(),
+    )
+    result = pipeline.run(QuerySpec("question"))
+    assert result.stages == {"candidate": [], "reranker_input": []}
+
+
+def test_partial_rerank_does_not_reward_exposure_alone() -> None:
+    hits = [
+        SearchHit("a", "p", NodeType.SENTENCE, 1.0, {"embedding": 1.0}),
+        SearchHit("b", "p", NodeType.FIGURE, 0.8, {"embedding": 0.8, "reranker": 0.9}),
+    ]
+    pipeline = ScientificRAGPipeline(
+        EvidenceGraph(), None, RecordingStore(), None, complete_reranker_ranking=True,
+    )
+    pipeline._fuse_hits(hits)
+    assert [h.node_id for h in hits] == ["a", "b"]
+    assert "reranker" not in hits[0].score_components
+
+
+def test_weighted_reranking_can_promote_a_reserved_image() -> None:
+    hits = [
+        SearchHit("a", "p", NodeType.SENTENCE, 1.0, {"embedding": 1.0, "reranker": 0.1}),
+        SearchHit("b", "p", NodeType.SENTENCE, 0.8, {"embedding": 0.8}),
+        SearchHit("c", "p", NodeType.FIGURE, 0.5, {"embedding": 0.5, "reranker": 0.9}),
+    ]
+    pipeline = ScientificRAGPipeline(
+        EvidenceGraph(), None, RecordingStore(), None,
+        complete_reranker_ranking=True, fusion_weights={"embedding": 1, "reranker": 2},
+    )
+    pipeline._fuse_hits(hits)
+    assert hits[0].node_id == "c"
+
+
+def test_figure_text_mixture_preserves_existing_description_and_id() -> None:
+    graph = EvidenceGraph()
+    graph.add_node(EvidenceNode(
+        "p:f", "p", NodeType.FIGURE, image_path="figure.png",
+        attributes={"text_view": "existing description"},
+    ))
+
+    class Embedder:
+        dimension = 2
+
+        def embed_images(self, paths):
+            return np.tile([2.0, 0.0], (len(paths), 1))
+
+        def embed_texts(self, texts):
+            assert texts == ["existing description"]
+            return np.tile([0.0, 3.0], (len(texts), 1))
+
+    build_figure_text_views(graph)
+    build_figure_text_views(graph)
+    assert graph.nodes["p:f"].searchable_text == "existing description"
+    embeddings, _ = compute_base_embeddings(graph, Embedder(), figure_text_weight=0.5)
+    assert set(embeddings) == {"p:f"}
+    np.testing.assert_allclose(embeddings["p:f"], [2 ** -0.5, 2 ** -0.5])
+    pure, _ = compute_base_embeddings(graph, Embedder(), figure_text_weight=0)
+    np.testing.assert_allclose(pure["p:f"], [2, 0])
+    assert embedding_config_digest({"embedding": {"figure_text_weight": 0}}) != (
+        embedding_config_digest({"embedding": {"figure_text_weight": 0.5}})
+    )
+
+
 def test_batched_queries_preserve_results_and_report_latency() -> None:
     graph = EvidenceGraph()
     graph.add_node(EvidenceNode("p:s", "p", NodeType.SENTENCE, text="answer"))
@@ -213,6 +300,19 @@ def test_embedding_cache_signature_changes_with_model_configuration() -> None:
     }
 
     assert embedding_config_digest(first) != embedding_config_digest(second)
+
+
+def test_graph_artifacts_cannot_silently_mix_embedding_representations(tmp_path):
+    config = {"embedding": {"figure_text_weight": 0.25}}
+    write_json(tmp_path / "training.json", {})
+    with pytest.raises(ValueError, match="Legacy graph artifacts"):
+        validate_graph_embedding_config(config, tmp_path)
+    write_json(tmp_path / "training.json", {
+        "embedding_config_sha256": embedding_config_digest(config),
+    })
+    validate_graph_embedding_config(config, tmp_path)
+    with pytest.raises(ValueError, match="different embedding configuration"):
+        validate_graph_embedding_config({"embedding": {"figure_text_weight": 0}}, tmp_path)
 
 
 def test_table_uses_mixed_embedding_when_image_is_available() -> None:

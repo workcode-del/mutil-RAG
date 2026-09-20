@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
 import logging
+import math
+from collections import defaultdict
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Protocol
 
@@ -42,6 +44,7 @@ class PipelineResult:
     hits: list[SearchHit]
     forest: EvidenceForest
     answer: Answer | None = None
+    stages: dict[str, list[str]] = field(default_factory=dict)
 
 
 class ScientificRAGPipeline:
@@ -57,6 +60,9 @@ class ScientificRAGPipeline:
         default_per_type_top_k: int = 25,
         reranker_top_n: int | None = None,
         query_parser: ScientificQueryParser | None = None,
+        reranker_min_per_type: int = 0,
+        fusion_weights: dict[str, float] | None = None,
+        complete_reranker_ranking: bool = False,
     ) -> None:
         self.graph = graph
         self.embedder = embedder
@@ -69,6 +75,13 @@ class ScientificRAGPipeline:
         if reranker_top_n is not None and reranker_top_n <= 0:
             raise ValueError("reranker_top_n must be positive")
         self.reranker_top_n = reranker_top_n
+        if reranker_min_per_type < 0:
+            raise ValueError("reranker_min_per_type must be nonnegative")
+        self.reranker_min_per_type = reranker_min_per_type
+        self.fusion_weights = fusion_weights or {}
+        if any(not math.isfinite(w) or w < 0 for w in self.fusion_weights.values()):
+            raise ValueError("fusion weights must be finite and nonnegative")
+        self.complete_reranker_ranking = complete_reranker_ranking
         self.query_parser = query_parser or ScientificQueryParser()
 
     def run(
@@ -102,6 +115,9 @@ class ScientificRAGPipeline:
             candidate_node_ids,
         )
         logger.debug("Candidate recall complete: hits=%d", len(hits))
+        stages = {"candidate": [hit.node_id for hit in hits]}
+        if self.reranker:
+            stages["reranker_input"] = []
         if self.graph_scorer:
             if log_stages:
                 logger.info(
@@ -118,7 +134,8 @@ class ScientificRAGPipeline:
             if log_stages:
                 logger.info("Query stage: multimodal reranking (%s)", type(self.reranker).__name__)
             self._fuse_hits(hits)
-            rerank_hits = hits[: self.reranker_top_n]
+            rerank_hits = self._rerank_candidates(hits)
+            stages["reranker_input"] = [hit.node_id for hit in rerank_hits]
             documents: list[str | dict[str, object]] = []
             for hit in rerank_hits:
                 node = self.graph.nodes[hit.node_id]
@@ -156,10 +173,26 @@ class ScientificRAGPipeline:
             forest.total_cost,
             (perf_counter() - started) * 1000,
         )
-        return PipelineResult(query, hits, forest, answer)
+        return PipelineResult(query, hits, forest, answer, stages)
 
-    @staticmethod
-    def _fuse_hits(hits: list[SearchHit]) -> None:
+    def _rerank_candidates(self, hits: list[SearchHit]) -> list[SearchHit]:
+        limit = self.reranker_top_n or len(hits)
+        groups: dict[NodeType, list[SearchHit]] = defaultdict(list)
+        for hit in hits:
+            groups[hit.node_type].append(hit)
+        # Reserve slots in rounds, so one type cannot exhaust a small quota.
+        reserved = [
+            group[rank]
+            for rank in range(min(self.reranker_min_per_type, limit))
+            for group in groups.values()
+            if rank < len(group)
+        ][:limit]
+        selected = {hit.node_id for hit in reserved}
+        reserved.extend(hit for hit in hits if hit.node_id not in selected)
+        selected = {hit.node_id for hit in reserved[:limit]}
+        return [hit for hit in hits if hit.node_id in selected]
+
+    def _fuse_hits(self, hits: list[SearchHit]) -> None:
         """Fuse only scores that were actually produced for a candidate."""
         scorer_names = sorted({name for hit in hits for name in hit.score_components})
         rankings = {
@@ -173,7 +206,20 @@ class ScientificRAGPipeline:
             ]
             for scorer in scorer_names
         }
-        fused = reciprocal_rank_fusion(rankings)
+        if self.complete_reranker_ranking and "reranker" in rankings:
+            # Untested items retain their pre-rerank positions, not a fabricated
+            # model score. Only tested items exchange slots in this full ranking.
+            base = reciprocal_rank_fusion(
+                {name: ids for name, ids in rankings.items() if name != "reranker"},
+                weights=self.fusion_weights,
+            )
+            order = sorted(hits, key=lambda hit: base.get(hit.node_id, 0.0), reverse=True)
+            scored = set(rankings["reranker"])
+            reranked = iter(rankings["reranker"])
+            rankings["reranker"] = [
+                next(reranked) if hit.node_id in scored else hit.node_id for hit in order
+            ]
+        fused = reciprocal_rank_fusion(rankings, weights=self.fusion_weights)
         for hit in hits:
             hit.score = fused.get(hit.node_id, 0.0)
         hits.sort(key=lambda hit: hit.score, reverse=True)

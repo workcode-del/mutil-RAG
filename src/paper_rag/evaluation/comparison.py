@@ -8,6 +8,12 @@ from typing import Any, Iterable
 
 DEFAULT_METRICS = (
     "macro_mrr",
+    "macro_candidate_recall",
+    "macro_reranker_input_recall",
+    "macro_figure_candidate_recall",
+    "macro_figure_reranker_input_recall",
+    "macro_table_candidate_recall",
+    "macro_table_reranker_input_recall",
     "macro_recall_at_1",
     "macro_recall_at_3",
     "macro_recall_at_5",

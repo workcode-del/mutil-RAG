@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -43,6 +44,8 @@ def build_deployed_pipeline(
         enable_generator,
     )
     config = load_yaml(config_path)
+    if graph_artifact_dir:
+        validate_graph_embedding_config(config, graph_artifact_dir)
     graph = load_graph(graph_path)
     normalized_candidate_backend = candidate_backend.strip().lower()
     if normalized_candidate_backend == "bm25":
@@ -76,6 +79,9 @@ def build_deployed_pipeline(
         generator=generator,
         default_per_type_top_k=int(vector_config.get("per_type_top_k", 25)),
         reranker_top_n=int(config["reranker"].get("top_n", 10)) if reranker else None,
+        reranker_min_per_type=int(config["reranker"].get("min_per_type", 0)),
+        fusion_weights=config.get("retrieval", {}).get("fusion_weights"),
+        complete_reranker_ranking=bool(config["reranker"].get("complete_ranking", False)),
     )
     logger.info("Pipeline ready: nodes=%d edges=%d", len(graph.nodes), len(graph.edges))
     return pipeline
@@ -105,6 +111,22 @@ def build_embedder(config: dict[str, Any]):
         modelscope_id=embedding.get("modelscope_id"),
         model_cache_dir=download.get("cache_dir", "data/models"),
     )
+
+
+def validate_graph_embedding_config(config: dict, artifact_dir: str | Path) -> None:
+    from paper_rag.workflow import embedding_config_digest
+
+    metadata = json.loads((Path(artifact_dir) / "training.json").read_text(encoding="utf-8"))
+    digest = metadata.get("embedding_config_sha256")
+    if digest and digest != embedding_config_digest(config):
+        raise ValueError(
+            "Graph artifacts use a different embedding configuration; retrain the graph index"
+        )
+    if not digest and config.get("embedding", {}).get("figure_text_weight", 0):
+        raise ValueError(
+            "Legacy graph artifacts cannot verify mixed figure embeddings; "
+            "retrain the graph index or set figure_text_weight=0 for the legacy representation"
+        )
 
 
 def build_vector_store(config: dict[str, Any]) -> QdrantEvidenceStore:
@@ -185,4 +207,7 @@ def build_retriever_config(config: dict) -> ECBFRConfig:
         entity_weight=float(retrieve_config.get("entity_weight", 0.3)),
         redundancy_weight=float(retrieve_config.get("redundancy_weight", 0.2)),
         relation_costs=relation_costs or None,
+        selection_score_source=str(retrieve_config.get("selection_score_source", "fusion")),
+        selection_threshold=float(retrieve_config.get("selection_threshold", 0.0)),
+        compact_trees=bool(retrieve_config.get("compact_trees", False)),
     )

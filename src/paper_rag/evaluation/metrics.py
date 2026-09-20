@@ -68,6 +68,9 @@ def result_metrics(
         "selected_nodes": float(len(selected)),
         "latency_ms": latency_ms,
     }
+    for stage, node_ids in result.stages.items():
+        metrics[f"{stage}_count"] = float(len(node_ids))
+        metrics[f"{stage}_recall"] = len(set(node_ids) & gold_ids) / len(gold_ids)
     skeleton_backends = {
         str(tree.metadata["skeleton_backend"])
         for tree in result.forest.trees
@@ -88,6 +91,10 @@ def result_metrics(
             node_id for node_id in gold_ids if graph.nodes[node_id].node_type is node_type
         }
         prefix = node_type.value.lower()
+        for stage, node_ids in result.stages.items():
+            metrics[f"{prefix}_{stage}_recall"] = (
+                len(set(node_ids) & typed_gold) / len(typed_gold) if typed_gold else None
+            )
         for cutoff in sorted(set(cutoffs)):
             ranked_prefix = set(ranked_ids[:cutoff])
             metrics[f"{prefix}_recall_at_{cutoff}"] = (

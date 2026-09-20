@@ -17,7 +17,9 @@ from paper_rag.benchmarking.base import (
     read_jsonl,
     write_json,
 )
-from paper_rag.bootstrap import build_deployed_pipeline, build_retriever_config
+from paper_rag.bootstrap import (
+    build_deployed_pipeline, build_retriever_config, validate_graph_embedding_config,
+)
 from paper_rag.config import load_yaml
 from paper_rag.evaluation import evaluate, load_samples, save_report
 from paper_rag.evaluation.comparison import save_comparison
@@ -84,6 +86,7 @@ def run_benchmark(
     allow_partial: bool = False,
     query_batch_size: int = 64,
 ) -> dict[str, Any]:
+    config = load_yaml(config_path)
     selected = [SYSTEMS[name] for name in systems]
     artifact_paths = {"hgt": hgt_artifacts, "rgcn": rgcn_artifacts}
     for graph_model in {system.graph_model for system in selected if system.graph_model}:
@@ -103,6 +106,7 @@ def run_benchmark(
                 Path(artifact_path),
                 expected_model_type=graph_model,
             )
+            validate_graph_embedding_config(config, artifact_path)
     if any(system.candidate_backend == "embedding" for system in selected):
         ensure_dense_index(layout, config_path, force=reindex)
         logger.info("Loading exact benchmark embedding store: dataset=%s", layout.name)
@@ -113,7 +117,6 @@ def run_benchmark(
     else:
         dense_store = None
 
-    config = load_yaml(config_path)
     retriever_config = build_retriever_config(config)
     samples = load_samples(sample_path)
     benchmark_nodes = (
@@ -209,6 +212,10 @@ def run_benchmark(
                     "scope": "corpus" if open_domain else "sample",
                     "structured_query_fraction": structured_query_fraction,
                     "entity_annotated_node_fraction": entity_annotated_node_fraction,
+                    "algorithm_config": {
+                        key: config.get(key, {})
+                        for key in ("embedding", "reranker", "retrieval", "graph_index")
+                    },
                 }
                 report = evaluate(
                     pipeline,
@@ -319,20 +326,25 @@ def train_benchmark_index(
     _validate_training_split(layout)
     ensure_dense_index(layout, config_path, force=reindex)
     work = layout.processed / "training"
+    graph_config = load_yaml(config_path).get("graph_index", {})
+    negative_sampling = str(graph_config.get("negative_sampling", "positive"))
+    if negative_sampling not in {"query", "positive"}:
+        raise ValueError("negative_sampling must be query or positive")
+    queries = embed_training_queries(
+        layout.samples("train"), work / "query_embeddings.npz", config_path,
+        batch_size=batch_size,
+    )
     pairs = build_query_pairs(
         layout.graph,
         layout.samples("train"),
         work / "query_pairs.jsonl",
         embeddings_path=layout.processed / "base_embeddings.npz",
         seed=seed,
+        query_embeddings_path=queries if negative_sampling == "query" else None,
+        negative_scope=str(graph_config.get(
+            "negative_scope", "train" if layout.name in OPEN_DOMAIN_DATASETS else "sample"
+        )),
     )
-    queries = embed_training_queries(
-        pairs,
-        work / "query_embeddings.npz",
-        config_path,
-        batch_size=batch_size,
-    )
-    graph_config = load_yaml(config_path).get("graph_index", {})
     artifacts = train_graph_index(
         layout.graph,
         layout.processed / "base_embeddings.npz",
@@ -356,6 +368,8 @@ def train_benchmark_index(
     metadata["dataset"] = layout.name
     metadata["source_splits"] = {layout.name: "train"}
     metadata["split_statistics"] = split_statistics
+    metadata["negative_sampling"] = negative_sampling
+    metadata["embedding_config_sha256"] = embedding_config_digest(load_yaml(config_path))
     write_json(artifacts / "training.json", metadata)
     logger.info(
         "Benchmark %s training complete: dataset=%s output=%s",

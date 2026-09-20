@@ -18,6 +18,9 @@ class PCSTCandidateConfig(Protocol):
     min_edge_confidence: float
     lambda_values: tuple[float, ...]
     relation_costs: dict | None
+    selection_score_source: str
+    selection_threshold: float
+    compact_trees: bool
 
 
 def build_pcst_candidates(
@@ -30,10 +33,21 @@ def build_pcst_candidates(
     max_cost: int | None = None,
 ) -> list[EvidenceTree]:
     """Build per-paper PCST candidates once for both baselines and EC-BFR."""
-    prizes = {hit.node_id: max(0.0, hit.score) for hit in hits}
+    # Plain PCST baselines keep their historical rewards. Only the budgeted
+    # selector uses thresholded raw scores, independent of ranking fusion.
+    source = config.selection_score_source if max_cost is not None else "fusion"
+    if source != "fusion" and not any(source in hit.score_components for hit in hits):
+        source = "embedding" if any("embedding" in h.score_components for h in hits) else "fusion"
+    prizes = {
+        hit.node_id: max(0.0, hit.score) if source == "fusion" else max(
+            0.0, hit.score_components.get(source, float("-inf")) - config.selection_threshold
+        )
+        for hit in hits
+    }
+    compact = config.compact_trees and max_cost is not None
     seeds_by_paper: dict[str, set[str]] = defaultdict(set)
     for hit in hits:
-        if hit.node_id in graph.nodes:
+        if hit.node_id in graph.nodes and prizes[hit.node_id] > 0:
             seeds_by_paper[hit.paper_id].add(hit.node_id)
 
     cost_model = CostModel(config.image_unit)
@@ -55,7 +69,7 @@ def build_pcst_candidates(
         # RRF scores are around 1e-2 while relation costs are around 1e-1.  Normalize
         # within each paper so PCST optimizes the intended relevance/cost trade-off.
         paper_prizes = {
-            node_id: prize / peak_prize if peak_prize > 0 else 0.0
+            node_id: prize / peak_prize if source == "fusion" and peak_prize > 0 else prize
             for node_id, prize in raw_prizes.items()
         }
         for scale in config.lambda_values:
@@ -67,11 +81,19 @@ def build_pcst_candidates(
             )
             if not skeleton.node_ids:
                 continue
+            roots = {node_id for node_id in skeleton.node_ids if prizes.get(node_id, 0) > 0}
             selected = (
                 evidence_closure(graph, skeleton.node_ids, closure_policy)
                 if closure_policy
                 else set(skeleton.node_ids)
             )
+            if compact:
+                selected, roots = compact_subtree(
+                    graph, skeleton.node_ids, skeleton.edge_pairs, roots, prizes,
+                    cost_model, max_cost, closure_policy,
+                )
+            if not selected:
+                continue
             identity = frozenset(selected)
             if identity in seen:
                 continue
@@ -83,15 +105,94 @@ def build_pcst_candidates(
                 EvidenceTree(
                     paper_id=paper_id,
                     node_ids=selected,
-                    edge_ids=skeleton.edge_pairs,
-                    relevance=sum(prizes.get(node_id, 0.0) for node_id in selected),
+                    edge_ids={
+                        (src, dst) for src, dst in skeleton.edge_pairs
+                        if src in selected and dst in selected
+                    },
+                    relevance=sum(
+                        prizes.get(node_id, 0.0)
+                        for node_id in (roots if compact else selected)
+                    ),
                     covered_slots=covered_slots(graph, query, selected),
                     entities=node_entities(graph, selected, query.entity_type),
                     cost=cost,
-                    metadata={"skeleton_backend": skeleton.backend, "lambda": scale},
+                    metadata={
+                        "skeleton_backend": skeleton.backend, "lambda": scale,
+                        "selection_score_source": source,
+                        "compact": compact,
+                        "primary_node_ids": sorted(roots),
+                        "dependency_node_ids": sorted(selected - skeleton.node_ids),
+                    },
                 )
             )
     return candidates
+
+
+def compact_subtree(
+    graph: EvidenceGraph,
+    skeleton: set[str],
+    edges: set[tuple[str, str]],
+    roots: set[str],
+    prizes: dict[str, float],
+    cost_model: CostModel,
+    budget: int,
+    policy: ClosurePolicy | None,
+) -> tuple[set[str], set[str]]:
+    """Prune optional branches, then remove lowest-value bundles until feasible.
+
+    Connector nodes between retained roots survive pruning. Dependencies
+    are recomputed after each proposed deletion, never removed independently.
+    """
+    adjacency = {node_id: set() for node_id in skeleton}
+    for src, dst in edges:
+        adjacency[src].add(dst)
+        adjacency[dst].add(src)
+
+    def close(keep: set[str]) -> set[str]:
+        if not keep:
+            return set()
+        # PCST returns a tree; BFS also handles cyclic/disconnected fallback graphs.
+        parents: dict[str, str | None] = {}
+        for root in sorted(keep):
+            if root in parents:
+                continue
+            parents[root] = None
+            queue = [root]
+            for node_id in queue:
+                for other in sorted(adjacency[node_id]):
+                    if other not in parents:
+                        parents[other] = node_id
+                        queue.append(other)
+        nodes: set[str] = set()
+        for root in keep:
+            current = root
+            while current is not None and current not in nodes:
+                nodes.add(current)
+                current = parents[current]
+        return evidence_closure(graph, nodes, policy) if policy else nodes
+
+    roots = set(roots)
+    selected = close(roots)
+    cost = cost_model.set_cost(graph, selected)
+    while cost > budget and roots:
+        best = None
+        for node_id in sorted(roots):
+            trial = close(roots - {node_id})
+            saved = cost - cost_model.set_cost(graph, trial)
+            if saved <= 0:
+                continue
+            loss = sum(prizes.get(root, 0.0) for root in roots - trial)
+            candidate = (loss / saved, node_id, trial, saved)
+            if best is None or candidate[:2] < best[:2]:
+                best = candidate
+        if best is None:
+            # All remaining seeds require each other; no smaller closed bundle.
+            return set(), set()
+        _, removed, selected, saved = best
+        roots.remove(removed)
+        roots.intersection_update(selected)
+        cost -= saved
+    return selected, roots
 
 
 def forest_from_trees(trees: list[EvidenceTree], budget: int) -> EvidenceForest:

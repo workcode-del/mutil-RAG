@@ -26,7 +26,10 @@ def compute_base_embeddings(
     embedder: Embedder,
     batch_size: int = 16,
     image_batch_size: int | None = None,
+    figure_text_weight: float = 0.0,
 ) -> tuple[dict[str, np.ndarray], IndexingReport]:
+    if not 0 <= figure_text_weight <= 1:
+        raise ValueError("figure_text_weight must be in [0, 1]")
     build_figure_text_views(graph)
     tables = [node for node in graph.nodes.values() if node.node_type is NodeType.TABLE]
     texts = [
@@ -48,6 +51,18 @@ def compute_base_embeddings(
     _embed_batches(texts, batch_size, embedder.embed_texts, result, "text")
     _embed_tables(tables, batch_size, embedder, result)
     _embed_batches(figures, image_batch_size, embedder.embed_images, result, "figure")
+    # Keep one vector and one evidence ID; mix normalized visual and textual views.
+    described = [node for node in figures if node.searchable_text.strip()]
+    if figure_text_weight and described:
+        text_vectors: dict[str, np.ndarray] = {}
+        _embed_batches(described, batch_size, embedder.embed_texts, text_vectors, "text")
+        for node in described:
+            visual = result[node.node_id]
+            textual = text_vectors[node.node_id]
+            mixed = (1 - figure_text_weight) * visual / max(np.linalg.norm(visual), 1e-12)
+            mixed += figure_text_weight * textual / max(np.linalg.norm(textual), 1e-12)
+            norm = np.linalg.norm(mixed)
+            result[node.node_id] = mixed / norm if norm > 1e-12 else visual
     return result, IndexingReport(len(texts), len(figures), embedder.dimension, len(tables))
 
 

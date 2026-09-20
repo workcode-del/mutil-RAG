@@ -54,7 +54,9 @@ def build_figure_text_views(graph: EvidenceGraph) -> None:
     for node in graph.nodes.values():
         if node.node_type is not NodeType.FIGURE:
             continue
-        parts: list[str] = []
+        # Some benchmarks supply descriptions without caption edges. Preserve these
+        # and make repeated enrichment idempotent (generated lines are deduplicated).
+        parts = node.searchable_text.splitlines()
         for edge in graph.incident_edges(node.node_id):
             other_id: str | None = None
             if edge.relation is RelationType.CAPTION_OF and edge.dst == node.node_id:
@@ -66,5 +68,5 @@ def build_figure_text_views(graph: EvidenceGraph) -> None:
             if other_id:
                 text = graph.nodes[other_id].searchable_text.strip()
                 if text:
-                    parts.append(text)
+                    parts.extend(text.splitlines())
         node.attributes["text_view"] = "\n".join(dict.fromkeys(parts))

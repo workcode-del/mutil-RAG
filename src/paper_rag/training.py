@@ -65,7 +65,11 @@ def build_query_pairs(
     *,
     embeddings_path: str | Path | None = None,
     seed: int = 42,
+    query_embeddings_path: str | Path | None = None,
+    negative_scope: str = "sample",
 ) -> Path:
+    if negative_scope not in {"sample", "train"}:
+        raise ValueError("negative_scope must be sample or train")
     graph = load_graph(graph_path)
     rng = random.Random(seed)
     embeddings = (
@@ -74,6 +78,22 @@ def build_query_pairs(
         else None
     )
     pair_count = 0
+    queries = _load_npz(query_embeddings_path) if query_embeddings_path else None
+    if queries is not None and embeddings is None:
+        raise ValueError("Query-hard negatives require evidence embeddings")
+    by_paper: dict[str, list[str]] = defaultdict(list)
+    for node_id, node in graph.nodes.items():
+        by_paper[node.paper_id].append(node_id)
+    train_papers: set[str] = set()
+    if negative_scope == "train":
+        for sample in iter_jsonl(samples_path):
+            train_papers.update(str(p) for p in sample.get("paper_ids", []))
+            if sample.get("paper_id") is not None:
+                train_papers.add(str(sample["paper_id"]))
+            for key in ("relevant_node_ids", "candidate_node_ids"):
+                train_papers.update(
+                    graph.nodes[n].paper_id for n in sample.get(key, []) if n in graph.nodes
+                )
 
     def generate_pairs():
         nonlocal pair_count
@@ -88,13 +108,14 @@ def build_query_pairs(
                 paper_ids.update(graph.nodes[node_id].paper_id for node_id in positives)
             raw_candidates = sample.get("candidate_node_ids") or [
                 node_id
-                for node_id, node in graph.nodes.items()
-                if node.paper_id in paper_ids
+                for paper_id in sorted(train_papers if negative_scope == "train" else paper_ids)
+                for node_id in by_paper[paper_id]
             ]
             candidates = [node_id for node_id in raw_candidates if node_id in graph.nodes]
             negatives = [node_id for node_id in candidates if node_id not in positives]
             if not positives or not negatives:
                 continue
+            query_negatives = {}
             for positive in positives:
                 same_type = [
                     node_id
@@ -102,17 +123,29 @@ def build_query_pairs(
                     if graph.nodes[node_id].node_type is graph.nodes[positive].node_type
                 ]
                 pool = same_type or negatives
-                negative = (
-                    max(pool, key=lambda node_id: _similarity(embeddings, positive, node_id))
-                    if embeddings is not None and positive in embeddings
-                    else rng.choice(pool)
-                )
+                if queries is not None:
+                    node_type = graph.nodes[positive].node_type
+                    if node_type not in query_negatives:
+                        query_negatives[node_type] = _query_hard_negative(
+                            embeddings, pool, queries[str(sample["query_id"])]
+                        )
+                    negative = query_negatives[node_type]
+                else:
+                    negative = (
+                        max(pool, key=lambda node_id: _similarity(embeddings, positive, node_id))
+                        if embeddings is not None and positive in embeddings
+                        else rng.choice(pool)
+                    )
                 pair_count += 1
                 yield {
                     "query_id": str(sample["query_id"]),
                     "query": str(sample["query"]),
                     "positive_node_id": positive,
                     "negative_node_id": negative,
+                    "negative_sampling": "query" if queries is not None else (
+                        "positive" if embeddings is not None else "random"
+                    ),
+                    "negative_scope": negative_scope,
                 }
 
     try:
@@ -122,6 +155,24 @@ def build_query_pairs(
             embeddings.close()
     logger.info("Training pairs ready: pairs=%d output=%s", pair_count, target)
     return target
+
+
+def _query_hard_negative(embeddings, pool: list[str], query: np.ndarray) -> str:
+    candidates = [node_id for node_id in pool if node_id in embeddings]
+    if not candidates:
+        raise ValueError("No embedded negative candidate in the permitted training scope")
+    query = np.asarray(query, dtype=np.float32)
+    query = query / max(float(np.linalg.norm(query)), 1e-12)
+    best_score, best_id = float("-inf"), candidates[0]
+    # Bounded temporary matrix even for an open-domain training corpus.
+    for start in range(0, len(candidates), 4096):
+        batch = candidates[start : start + 4096]
+        vectors = embeddings.vectors[[embeddings.positions[node_id] for node_id in batch]]
+        scores = (vectors @ query) / np.maximum(np.linalg.norm(vectors, axis=1), 1e-12)
+        index = int(np.argmax(scores))
+        if float(scores[index]) > best_score:
+            best_score, best_id = float(scores[index]), batch[index]
+    return best_id
 
 
 def embed_training_queries(
@@ -303,6 +354,8 @@ def train_hgt(
 
     metadata = {
         "graph_sha256": hashlib.sha256(Path(graph_path).read_bytes()).hexdigest(),
+        "negative_sampling": sorted({row.get("negative_sampling", "unknown") for row in samples}),
+        "negative_scope": sorted({row.get("negative_scope", "unknown") for row in samples}),
         "model_type": normalized_model_type,
         "query_pairs": len(samples),
         "train_query_ids": sorted({row["query_id"] for row in samples}),
@@ -323,6 +376,11 @@ def train_hgt(
         "relation_weight": relation_weight,
         "seed": seed,
     }
+    cache_metadata = Path(f"{base_embeddings_path}.meta.json")
+    if cache_metadata.exists():
+        metadata["embedding_config_sha256"] = json.loads(
+            cache_metadata.read_text(encoding="utf-8")
+        ).get("embedding_config_sha256")
     export_started = perf_counter()
     artifacts = _export_hgt(
         model,

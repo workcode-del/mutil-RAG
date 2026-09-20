@@ -29,6 +29,8 @@ embedding:
   dimension: 2048
   text_batch_size: 64
   image_batch_size: 8
+  # Unit-normalized visual/text vector mixture; 0 restores pure-image indexing.
+  figure_text_weight: 0.25
   query_instruction: Retrieve scientific evidence that answers the question.
 
 vector_store:
@@ -40,6 +42,7 @@ vector_store:
   upload_parallel: 1
 
 graph_index:
+  negative_sampling: query
   hidden_dimension: 256
   layers: 2
   heads: 4
@@ -54,9 +57,17 @@ reranker:
   model_source: modelscope
   modelscope_id: Qwen/Qwen3-VL-Reranker-2B
   local_path:
-  top_n: 10
+  top_n: 50
+  min_per_type: 3
+  complete_ranking: true
 
 retrieval:
+  fusion_weights: {embedding: 1.0, hgt: 0.5, rgcn: 0.5, reranker: 2.0}
+  # Raw score margin, not a calibrated probability; tune on validation only.
+  # Without reranking use embedding scores; 'fusion' restores old rewards.
+  selection_score_source: reranker
+  selection_threshold: 0.1
+  compact_trees: true
   candidate_hops: 2
   min_edge_confidence: 0.8
   lambda_values: [0.5, 1.0, 2.0]

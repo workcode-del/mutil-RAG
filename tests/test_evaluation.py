@@ -48,6 +48,7 @@ def test_result_metrics_separate_ranked_hits_from_selected_evidence() -> None:
         ],
         EvidenceForest([EvidenceTree("p", {"p:s1"}, cost=1)], total_cost=1, budget=10),
         Answer("answer"),
+        stages={"candidate": ["p:s1", "p:s2"], "reranker_input": ["p:s2"]},
     )
 
     metrics = result_metrics(
@@ -65,6 +66,9 @@ def test_result_metrics_separate_ranked_hits_from_selected_evidence() -> None:
     assert metrics["budget_violation"] == 0.0
     assert metrics["answer_exact_match"] == 1.0
     assert "citation_f1" not in metrics
+    assert metrics["candidate_recall"] == 1.0
+    assert metrics["reranker_input_recall"] == 0.0
+    assert metrics["sentence_candidate_recall"] == 1.0
 
 
 def test_result_metrics_report_each_modality_at_every_cutoff() -> None:

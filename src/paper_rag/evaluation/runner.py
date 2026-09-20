@@ -115,6 +115,7 @@ def evaluate(
                 "metrics": metrics,
                 "gold_node_ids": sorted(sample.relevant_node_ids),
                 "ranked_hits": [serialize_hit(hit) for hit in result.hits],
+                "stage_node_ids": result.stages,
                 "selected_node_ids": sorted(result.forest.node_ids),
                 "forest_metadata": [tree.metadata for tree in result.forest.trees],
                 "answer": result.answer.text if result.answer else None,

@@ -16,6 +16,8 @@ from paper_rag.retrieval.ec_bfr import (
     EvidenceClosureBudgetedForestRetriever,
 )
 from paper_rag.retrieval.fusion import reciprocal_rank_fusion
+from paper_rag.retrieval.cost import CostModel
+from paper_rag.retrieval.pcst_candidates import compact_subtree, build_pcst_candidates
 
 
 def _baseline_graph() -> EvidenceGraph:
@@ -218,3 +220,78 @@ def test_gold_modality_metadata_is_not_a_selection_slot() -> None:
     query = QuerySpec("figure", required_modalities=["figure"])
 
     assert query.required_slots == {"answer"}
+
+
+def test_compact_tree_repairs_budget_without_dropping_required_caption() -> None:
+    graph = _baseline_graph()
+    graph.add_node(EvidenceNode("p:noise", "p", NodeType.SENTENCE, text="noise " * 30))
+    nodes = {"p:s", "p:noise"}
+    selected, roots = compact_subtree(
+        graph, nodes, {("p:s", "p:noise")}, nodes, {"p:s": 0.9, "p:noise": 0.01},
+        CostModel(20), 30, ClosurePolicy(),
+    )
+    assert roots == {"p:s"}
+    assert selected == {"p:s", "p:f", "p:c"}
+    assert validate_closure(graph, selected, ClosurePolicy())
+    assert CostModel(20).set_cost(graph, selected) <= 30
+
+
+def test_compact_tree_preserves_connectors_and_prunes_optional_leaf() -> None:
+    graph = EvidenceGraph()
+    for node_id in ("a", "bridge", "b", "noise"):
+        graph.add_node(EvidenceNode(node_id, "p", NodeType.SENTENCE, text=node_id))
+    nodes, roots = compact_subtree(
+        graph, set(graph.nodes), {("a", "bridge"), ("bridge", "b"), ("bridge", "noise")},
+        {"a", "b"}, {"a": 1, "b": 0.8}, CostModel(), 100, ClosurePolicy(),
+    )
+    assert nodes == {"a", "bridge", "b"}
+    assert roots == {"a", "b"}
+
+
+def test_indivisible_dependency_bundle_is_not_forced_under_budget() -> None:
+    graph = _baseline_graph()
+    nodes, roots = compact_subtree(
+        graph, {"p:s"}, set(), {"p:s"}, {"p:s": 1}, CostModel(20), 1, ClosurePolicy(),
+    )
+    assert nodes == roots == set()
+
+
+def test_compaction_removes_unrewarded_cycles_and_disconnected_components():
+    graph = EvidenceGraph()
+    for node_id in ("gold", "a", "b", "c", "isolated"):
+        graph.add_node(EvidenceNode(node_id, "p", NodeType.SENTENCE, text=node_id))
+    selected, roots = compact_subtree(
+        graph, set(graph.nodes), {("gold", "a"), ("a", "b"), ("b", "c"), ("c", "a")},
+        {"gold"}, {"gold": 1.0}, CostModel(), 1, ClosurePolicy(),
+    )
+    assert selected == roots == {"gold"}
+
+
+def test_selection_margin_uses_raw_score_without_mutating_ranking() -> None:
+    graph = _baseline_graph()
+    hits = [SearchHit("p:s", "p", NodeType.SENTENCE, 0.03, {"reranker": 0.05})]
+    config = ECBFRConfig(
+        selection_score_source="reranker", selection_threshold=0.1, compact_trees=True,
+    )
+    candidates = build_pcst_candidates(
+        graph, QuerySpec("q"), hits, config, closure_policy=ClosurePolicy(), max_cost=100,
+    )
+    assert candidates == []
+    assert hits[0].score == 0.03
+
+
+def test_selection_does_not_award_unscored_dependencies(monkeypatch) -> None:
+    import paper_rag.retrieval.pcst_candidates as module
+    from paper_rag.retrieval.pcst import PCSTResult
+
+    graph = _baseline_graph()
+    monkeypatch.setattr(module, "solve_pcst", lambda *a, **kw: PCSTResult({"p:f"}, set(), "test"))
+    hits = [SearchHit("p:f", "p", NodeType.FIGURE, 0.03, {"reranker": 0.9})]
+    candidates = build_pcst_candidates(
+        graph, QuerySpec("q"), hits,
+        ECBFRConfig(selection_score_source="reranker", selection_threshold=0.1, compact_trees=True),
+        closure_policy=ClosurePolicy(), max_cost=1000,
+    )
+    assert len(candidates) == 1
+    assert abs(candidates[0].relevance - 0.8) < 1e-6
+    assert candidates[0].node_ids == {"p:f", "p:c"}

@@ -2,6 +2,8 @@
 
 公开 benchmark 与自定义证据图共用同一套检索系统、指标和报告格式。部署与建库见 [DEPLOYMENT.md](DEPLOYMENT.md)，算法定义见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
+新增的排序、图文表示、紧凑证据选择与困难负样本设置见 [优化与对照](OPTIMIZATION.md)。
+
 ## 1. 公开数据集
 
 一条命令完成数据准备、Dense 索引、系统矩阵和汇总：

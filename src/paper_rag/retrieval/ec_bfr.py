@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from paper_rag.domain import EvidenceForest, EvidenceTree, QuerySpec, SearchHit
@@ -21,6 +22,15 @@ class ECBFRConfig:
     entity_weight: float = 0.3
     redundancy_weight: float = 0.2
     relation_costs: dict | None = field(default_factory=lambda: dict(DEFAULT_RELATION_COSTS))
+    selection_score_source: str = "fusion"
+    selection_threshold: float = 0.0
+    compact_trees: bool = False
+
+    def __post_init__(self) -> None:
+        if self.selection_score_source not in {"fusion", "embedding", "reranker"}:
+            raise ValueError("selection_score_source must be fusion, embedding or reranker")
+        if not math.isfinite(self.selection_threshold):
+            raise ValueError("selection_threshold must be finite")
 
 
 class EvidenceClosureBudgetedForestRetriever:

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from paper_rag.benchmarking.base import read_jsonl, write_jsonl
 from paper_rag.domain import EvidenceEdge, EvidenceNode, NodeType, RelationType
@@ -87,6 +88,38 @@ def test_query_pairs_keep_all_gold_evidence(tmp_path) -> None:
     output = build_query_pairs(graph_path, samples, tmp_path / "pairs.jsonl")
 
     assert {row["positive_node_id"] for row in read_jsonl(output)} == {"p:a", "p:b"}
+
+
+@pytest.mark.parametrize("explicit_candidates", [False, True])
+def test_query_hard_negatives_respect_training_and_candidate_scopes(tmp_path, explicit_candidates):
+    graph = EvidenceGraph()
+    vectors = {
+        "p:gold": [1.0, 0.0], "p:similar": [0.99, 0.1],
+        "p:query_hard": [0.1, 0.9], "q:other_train": [0.0, 1.0],
+        "heldout:node": [0.0, 1.0],
+    }
+    for node_id in vectors:
+        graph.add_node(EvidenceNode(node_id, node_id.split(":")[0], NodeType.SENTENCE, text=node_id))
+    graph_path = tmp_path / "graph.json"
+    save_graph(graph, graph_path)
+    row = {"query_id": "a", "query": "question", "relevant_node_ids": ["p:gold"]}
+    if explicit_candidates:
+        row["candidate_node_ids"] = ["p:gold", "p:similar", "p:query_hard"]
+    samples = write_jsonl(tmp_path / "train.jsonl", [
+        row, {"query_id": "b", "query": "second", "relevant_node_ids": ["q:other_train"]},
+    ])
+    base = tmp_path / "base.npz"
+    np.savez_compressed(base, **vectors)
+    queries = tmp_path / "queries.npz"
+    np.savez_compressed(queries, a=[0.0, 1.0], b=[1.0, 0.0])
+    output = build_query_pairs(
+        graph_path, samples, tmp_path / "pairs.jsonl", embeddings_path=base,
+        query_embeddings_path=queries, negative_scope="train",
+    )
+    rows = read_jsonl(output)
+    assert rows[0]["negative_node_id"] == ("p:query_hard" if explicit_candidates else "q:other_train")
+    assert all(row["negative_node_id"] != "heldout:node" for row in rows)
+    assert rows[0]["negative_sampling"] == "query"
 
 
 def test_query_pairs_infer_candidates_from_gold_papers(tmp_path) -> None:

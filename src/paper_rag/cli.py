@@ -287,18 +287,20 @@ def _index_graph(args: argparse.Namespace) -> int:
 def _train_index(args: argparse.Namespace) -> int:
     root = Path(args.work_dir)
     graph_config = load_yaml(args.config).get("graph_index", {})
+    negative_sampling = str(graph_config.get("negative_sampling", "positive"))
+    if negative_sampling not in {"query", "positive"}:
+        raise ValueError("negative_sampling must be query or positive")
+    queries = embed_training_queries(
+        args.samples, root / "query_embeddings.npz", args.config, batch_size=args.batch_size,
+    )
     pairs = build_query_pairs(
         args.graph,
         args.samples,
         root / "query_pairs.jsonl",
         embeddings_path=args.base_embeddings,
         seed=args.seed,
-    )
-    queries = embed_training_queries(
-        pairs,
-        root / "query_embeddings.npz",
-        args.config,
-        batch_size=args.batch_size,
+        query_embeddings_path=queries if negative_sampling == "query" else None,
+        negative_scope=str(graph_config.get("negative_scope", "sample")),
     )
     artifacts = train_graph_index(
         args.graph,

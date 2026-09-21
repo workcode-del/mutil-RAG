@@ -145,6 +145,10 @@ def compact_subtree(
     """
     adjacency = {node_id: set() for node_id in skeleton}
     for src, dst in edges:
+        # Use only edges inside the selected skeleton. Required dependencies
+        # outside it are restored by close(), not promoted to connector nodes.
+        if src not in adjacency or dst not in adjacency:
+            continue
         adjacency[src].add(dst)
         adjacency[dst].add(src)
 

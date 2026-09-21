@@ -248,6 +248,47 @@ def test_compact_tree_preserves_connectors_and_prunes_optional_leaf() -> None:
     assert roots == {"a", "b"}
 
 
+def test_compact_tree_ignores_edges_outside_selected_skeleton() -> None:
+    graph = _baseline_graph()
+    skeleton = {"p:s", "p:f"}
+    for dangling in (("p:f", "p:c"), ("p:c", "p:f")):
+        edges = {("p:s", "p:f"), dangling}
+        selected, roots = compact_subtree(
+            graph, skeleton, edges, skeleton, {"p:s": 1, "p:f": 1},
+            CostModel(20), 100, None,
+        )
+        assert selected == roots == skeleton
+        assert skeleton == {"p:s", "p:f"}
+        assert edges == {("p:s", "p:f"), dangling}
+
+
+def test_candidate_compaction_restores_caption_and_enforces_budget() -> None:
+    from unittest.mock import patch
+    from paper_rag.retrieval.pcst import PCSTResult
+
+    graph = _baseline_graph()
+    result = PCSTResult({"p:f"}, {("p:f", "p:c")}, "test")
+    hits = [SearchHit("p:f", "p", NodeType.FIGURE, 0.03, {"reranker": 0.9})]
+    config = ECBFRConfig(image_unit=20, lambda_values=(1.0,), compact_trees=True)
+    cost = CostModel(20).set_cost(graph, {"p:f", "p:c"})
+    with patch("paper_rag.retrieval.pcst_candidates.solve_pcst", return_value=result):
+        candidates = build_pcst_candidates(
+            graph, QuerySpec("q"), hits, config,
+            closure_policy=ClosurePolicy(), max_cost=cost,
+        )
+        assert len(candidates) == 1
+        tree = candidates[0]
+        assert tree.node_ids == {"p:f", "p:c"}
+        assert tree.metadata["primary_node_ids"] == ["p:f"]
+        assert tree.metadata["dependency_node_ids"] == ["p:c"]
+        assert tree.cost == cost
+        assert validate_closure(graph, tree.node_ids, ClosurePolicy())
+        assert build_pcst_candidates(
+            graph, QuerySpec("q"), hits, config,
+            closure_policy=ClosurePolicy(), max_cost=cost - 1,
+        ) == []
+
+
 def test_indivisible_dependency_bundle_is_not_forced_under_budget() -> None:
     graph = _baseline_graph()
     nodes, roots = compact_subtree(

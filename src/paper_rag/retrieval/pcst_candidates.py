@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterator
 import re
 from typing import Protocol
 
@@ -32,7 +33,7 @@ def build_pcst_candidates(
     closure_policy: ClosurePolicy | None = None,
     max_cost: int | None = None,
 ) -> list[EvidenceTree]:
-    """Build per-paper PCST candidates once for both baselines and EC-BFR."""
+    """Build PCST candidates; budgeted forests keep separate graph components."""
     # Plain PCST baselines keep their historical rewards. Only the budgeted
     # selector uses thresholded raw scores, independent of ranking fusion.
     source = config.selection_score_source if max_cost is not None else "fusion"
@@ -53,19 +54,11 @@ def build_pcst_candidates(
     cost_model = CostModel(config.image_unit)
     candidates: list[EvidenceTree] = []
     seen: set[frozenset[str]] = set()
-    for paper_id, seed_ids in seeds_by_paper.items():
-        expanded = graph.expand(
-            seed_ids,
-            hops=config.candidate_hops,
-            min_confidence=config.min_edge_confidence,
-        )
-        paper_graph = graph.paper_subgraph(
-            paper_id,
-            expanded,
-            min_edge_confidence=config.min_edge_confidence,
-        )
+    for paper_id, paper_graph in _candidate_subgraphs(
+        graph, seeds_by_paper, config, split_components=max_cost is not None,
+    ):
         raw_prizes = {node_id: prizes.get(node_id, 0.0) for node_id in paper_graph.nodes}
-        peak_prize = max(raw_prizes.values(), default=0.0)
+        peak_prize = max(prizes[node_id] for node_id in seeds_by_paper[paper_id])
         # RRF scores are around 1e-2 while relation costs are around 1e-1.  Normalize
         # within each paper so PCST optimizes the intended relevance/cost trade-off.
         paper_prizes = {
@@ -126,6 +119,38 @@ def build_pcst_candidates(
                 )
             )
     return candidates
+
+
+def _candidate_subgraphs(
+    graph: EvidenceGraph,
+    seeds_by_paper: dict[str, set[str]],
+    config: PCSTCandidateConfig,
+    *,
+    split_components: bool,
+) -> Iterator[tuple[str, EvidenceGraph]]:
+    """Keep disconnected evidence eligible without inventing semantic edges."""
+    for paper_id, seed_ids in seeds_by_paper.items():
+        expanded = graph.expand(
+            seed_ids, hops=config.candidate_hops,
+            min_confidence=config.min_edge_confidence,
+        )
+        local = graph.paper_subgraph(
+            paper_id, expanded, min_edge_confidence=config.min_edge_confidence,
+        )
+        if not split_components:
+            yield paper_id, local
+            continue
+        unseen = set(local.nodes)
+        while unseen:
+            component = {min(unseen)}
+            queue = list(component)
+            for node_id in queue:
+                neighbors = local.neighbors(node_id) - component
+                component.update(neighbors)
+                queue.extend(sorted(neighbors))
+            unseen.difference_update(component)
+            if component & seed_ids:
+                yield paper_id, local.paper_subgraph(paper_id, component)
 
 
 def compact_subtree(

@@ -99,9 +99,9 @@ class EvidenceClosureBudgetedForestRetriever:
             covered_slots.update(chosen.covered_slots)
             entities.update(chosen.entities)
             total_cost += marginal_cost
-            # A forest contains at most one optimized evidence tree per paper.  The
-            # lambda sweep generates alternatives, not independent trees to stack.
-            remaining = [item for item in remaining if item.paper_id != chosen.paper_id]
+            # Disjoint evidence from one paper can be complementary. Exclude
+            # overlapping alternatives to avoid counting their rewards twice.
+            remaining = [item for item in remaining if item.node_ids.isdisjoint(selected_nodes)]
 
         forest = EvidenceForest(selected, total_cost, self.config.budget)
         forest.validate_budget()

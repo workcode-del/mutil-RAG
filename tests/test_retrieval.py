@@ -189,7 +189,7 @@ def test_forest_is_closed_and_budgeted() -> None:
         assert {f"{tree.paper_id}:f", f"{tree.paper_id}:c"}.issubset(tree.node_ids)
 
 
-def test_ec_bfr_selects_only_one_lambda_candidate_per_paper() -> None:
+def test_ec_bfr_keeps_disjoint_same_paper_evidence_and_deduplicates() -> None:
     graph = EvidenceGraph()
     graph.extend(
         [
@@ -204,11 +204,75 @@ def test_ec_bfr_selects_only_one_lambda_candidate_per_paper() -> None:
     candidates = [
         EvidenceTree("p", {"p:a"}, relevance=1.0, cost=1),
         EvidenceTree("p", {"p:b"}, relevance=0.9, cost=1),
+        EvidenceTree("p", {"p:a"}, relevance=0.8, cost=1),
     ]
 
     forest = retriever._select_forest(QuerySpec("q"), candidates)
 
-    assert len(forest.trees) == 1
+    assert len(forest.trees) == 2
+    assert forest.node_ids == {"p:a", "p:b"}
+    assert forest.total_cost == 2
+
+
+def test_budgeted_candidates_keep_disconnected_nodes_but_plain_pcst_is_unchanged(monkeypatch):
+    from paper_rag.retrieval.pcst import PCSTResult
+
+    graph = EvidenceGraph()
+    hits = []
+    for node_id, score in (("a", 0.9), ("b", 0.8)):
+        graph.add_node(EvidenceNode(node_id, "p", NodeType.TABLE, text=node_id))
+        hits.append(SearchHit(node_id, "p", NodeType.TABLE, score, {"reranker": score}))
+
+    def single_component(local, prizes, *args, **kwargs):
+        # Model a one-cluster solver on isolated nodes, even without pcst_fast.
+        return PCSTResult({max(local.nodes, key=prizes.get)}, set(), "pcst_fast")
+
+    monkeypatch.setattr("paper_rag.retrieval.pcst_candidates.solve_pcst", single_component)
+    config = ECBFRConfig(budget=2, selection_score_source="reranker", compact_trees=True)
+    retriever = EvidenceClosureBudgetedForestRetriever(graph, config)
+    forest = retriever.retrieve(QuerySpec("q"), hits)
+    assert forest.node_ids == {"a", "b"}
+    assert forest.total_cost == 2
+    plain = build_pcst_candidates(graph, QuerySpec("q"), hits, config)
+    assert len(plain) == 1
+    assert plain[0].node_ids == {"a"}
+
+
+def test_same_paper_image_components_keep_closure_and_budget():
+    graph = EvidenceGraph()
+    hits = []
+    for name in ("a", "b"):
+        graph.add_node(EvidenceNode(name, "p", NodeType.FIGURE, image_path=f"{name}.png"))
+        graph.add_node(EvidenceNode(f"{name}:c", "p", NodeType.CAPTION, text="caption"))
+        graph.add_edge(EvidenceEdge(f"{name}:c", name, RelationType.CAPTION_OF,
+                                   mandatory_for_closure=True))
+        hits.append(SearchHit(name, "p", NodeType.FIGURE, 0.9, {"reranker": 0.9}))
+    for budget, count in ((21, 1), (42, 2)):
+        retriever = EvidenceClosureBudgetedForestRetriever(
+            graph, ECBFRConfig(budget=budget, image_unit=20, compact_trees=True,
+                               selection_score_source="reranker"),
+        )
+        forest = retriever.retrieve(QuerySpec("q"), hits)
+        assert len(forest.trees) == count
+        assert forest.total_cost == 21 * count
+        assert validate_closure(graph, forest.node_ids, ClosurePolicy())
+
+
+def test_candidate_components_preserve_edges_and_respect_confidence_and_paper_scope():
+    from paper_rag.retrieval.pcst_candidates import _candidate_subgraphs
+
+    graph = EvidenceGraph()
+    for node_id, paper in (("a", "p"), ("b", "p"), ("c", "p"), ("d", "other")):
+        graph.add_node(EvidenceNode(node_id, paper, NodeType.SENTENCE, text=node_id))
+    graph.add_edge(EvidenceEdge("a", "b", RelationType.NEXT_SENTENCE))
+    graph.add_edge(EvidenceEdge("b", "c", RelationType.NEXT_SENTENCE, confidence=0.2))
+    graph.add_edge(EvidenceEdge("b", "d", RelationType.NEXT_SENTENCE))
+    parts = list(_candidate_subgraphs(
+        graph, {"p": {"a", "c"}}, ECBFRConfig(), split_components=True,
+    ))
+    assert [set(part.nodes) for _, part in parts] == [{"a", "b"}, {"c"}]
+    assert len(parts[0][1].edges) == 1
+    assert parts[1][1].edges == []
 
 
 def test_rrf_does_not_depend_on_raw_score_scale() -> None:
